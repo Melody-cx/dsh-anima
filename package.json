@@ -6,6 +6,22 @@
   "type": "module",
   "main": "./index.mjs",
   "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "persona",
+    "memory",
+    "prompt"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Melody-cx/dsh-anima.git"
+  },
+  "homepage": "https://github.com/Melody-cx/dsh-anima#readme",
+  "bugs": {
+    "url": "https://github.com/Melody-cx/dsh-anima/issues"
+  },
   "exports": {
     ".": "./index.mjs",
     "./client": "./client/index.mjs",
