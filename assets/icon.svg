@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="3.8 3.8 28.4 28.4" fill="none" role="img" aria-label="dsh-anima">
+  <defs>
+    <!--
+      色系刻意避开纯蓝：本插件的卖点是「人格 + 记忆」双层，
+      人形用靛紫、火花用绿 —— 绿色是记忆层的强调色，两层各占一色。
+    -->
+    <linearGradient id="animaPerson" x1="18" y1="8.6" x2="18" y2="29.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C4B5FD"/>
+      <stop offset="0.5" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+    <linearGradient id="animaSpark" x1="27.2" y1="5.2" x2="27.2" y2="13.2" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#86EFAC"/>
+      <stop offset="0.5" stop-color="#22C55E"/>
+      <stop offset="1" stop-color="#15803D"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 人形：头 -->
+  <path d="M18 8.6a4.6 4.6 0 1 0 0 9.2 4.6 4.6 0 1 0 0-9.2"
+        stroke="url(#animaPerson)" stroke-width="2.3" stroke-linecap="round" fill="none"/>
+
+  <!-- 人形：肩 -->
+  <path d="M8.8 29.8c0-5.08 4.12-9.2 9.2-9.2s9.2 4.12 9.2 9.2"
+        stroke="url(#animaPerson)" stroke-width="2.3" stroke-linecap="round" fill="none"/>
+
+  <!-- 火花：右上角，代表持续积累的记忆 -->
+  <path d="M27.2 5.2c.32 2.2 1.78 3.66 3.98 3.98-2.2.32-3.66 1.78-3.98 3.98-.32-2.2-1.78-3.66-3.98-3.98 2.2-.32 3.66-1.78 3.98-3.98Z"
+        fill="url(#animaSpark)"/>
+</svg>

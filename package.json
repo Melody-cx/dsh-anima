@@ -1,0 +1,50 @@
+{
+  "name": "dsh-anima",
+  "version": "1.0.0",
+  "description": "DSH 助手人格与外挂记忆层：AI 自身的名字与角色、按工作区两级覆盖、带待审缓冲区的长期记忆",
+  "icon": "./assets/icon.svg",
+  "type": "module",
+  "main": "./index.mjs",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "lib",
+    "client",
+    "assets",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "README_EN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1 || ^4.0.5-alpha.1",
+    "@deepseek-ai/dsh-llm": ">=0.1.1-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.6-0 <0.2.0 || >=0.2.0-0 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0-0"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.1.6-0 <0.2.0 || >=0.2.0-0 <0.3.0-0"
+  }
+}
