@@ -169,6 +169,34 @@ The near-duplicate hint deliberately only hints and never merges: auto-merging w
 
 ## Installation
 
+### From GitHub (recommended)
+
+The plugin is not published to npm yet; install it straight from the repository:
+
+```
+dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
+```
+
+Or edit the profile's `package.json` by hand:
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-anima": "github:Melody-cx/dsh-anima#v1.0.0"
+  },
+  "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
+}
+```
+
+`#v1.0.0` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
+otherwise any upstream change lands in your profile on the next install. A git source downloads the
+**whole repository tarball** (this one is small), so the first install may be slower than an npm source;
+retry once if it times out.
+
+Then `pnpm install` and **restart DSH**. Any host-side change requires a restart to take effect.
+
+### From source (for development)
+
 Add the dependency to the profile's `package.json` (the `/plugins` UI works too):
 
 ```jsonc
@@ -181,9 +209,7 @@ Add the dependency to the profile's `package.json` (the `/plugins` UI works too)
 ```
 
 A local `file:` dependency has **copy** semantics: after editing the source you must **reinstall** for it to take effect, and a re-run is skipped outright when pnpm decides
-`changed:false` — so the correct sequence is `remove_bundle` followed by `install_bundle` (or compare the SHA256 of the `node_modules` copy against the source). Once the package is published to npm, that line simply becomes `"dsh-anima": "^1.0.0"`.
-
-Then `pnpm install` and **restart DSH**. Any host-side change requires a restart to take effect.
+`changed:false` — so the correct sequence is `remove_bundle` followed by `install_bundle` (or compare the SHA256 of the `node_modules` copy against the source).
 
 **Prerequisites** (already declared in `package.json`; check these first when installation fails):
 

@@ -209,6 +209,33 @@ URL 内嵌凭据等 11 类模式。
 
 ## 安装
 
+### 从 GitHub 安装（推荐）
+
+本插件尚未发布到 npm，从仓库直接装：
+
+```
+dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
+```
+
+或者手工改 profile 的 `package.json`：
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-anima": "github:Melody-cx/dsh-anima#v1.0.0"
+  },
+  "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
+}
+```
+
+`#v1.0.0` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
+否则上游的任何改动都会在下次安装时直接进入你的 profile。git 源下载的是**整个仓库 tarball**
+（本仓库很小），首次安装可能比 npm 源慢一些，超时的话重试一次即可。
+
+然后 `pnpm install`，**重启 DSH**。宿主侧改动一律需要重启才生效。
+
+### 从源码安装（开发用）
+
 在 profile 的 `package.json` 里加依赖（也可以用 `/plugins` 界面）：
 
 ```jsonc
@@ -222,9 +249,7 @@ URL 内嵌凭据等 11 类模式。
 
 本地 `file:` 依赖是**复制**语义：改完源码要**重新安装**才生效，且重跑安装时若 pnpm 判定
 `changed:false` 会直接跳过 —— 正确姿势是先 `remove_bundle` 再 `install_bundle`
-（或比对 `node_modules` 副本与源码的 SHA256）。发布到 npm 之后把那一行换成 `"dsh-anima": "^1.0.0"` 即可。
-
-然后 `pnpm install`，**重启 DSH**。宿主侧改动一律需要重启才生效。
+（或比对 `node_modules` 副本与源码的 SHA256）。
 
 **运行前提**（`package.json` 里已声明，装不上时先看这几条）：
 
