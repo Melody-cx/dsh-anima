@@ -49,6 +49,30 @@ window.__ModuleLoader__.load({
     const VERSION = '1.0.0'
     const REQUEST_TIMEOUT_MS = 15000
 
+    // ── 设置页分区 ──────────────────────────────────────────────────────
+    //
+    // 十张卡片平铺在一页里时，用户的原话是「太乱了我看不明白」。分区不是为了
+    // 好看，是为了让任何时刻屏幕上只有一类东西 —— 找「记忆」不必先滚过四张卡。
+    //
+    // 这里只声明「哪张卡属于哪一栏」，卡片的渲染顺序与折叠机制一概不变；
+    // 不活跃的分区**仍然渲染**，只是被 display:none 藏起来。理由有两条：
+    //   ① 折叠态、未保存的表单值都在这些卡片自己的子树里，真不渲染会把用户
+    //      切走前敲了半截的内容一起丢掉；
+    //   ② 渲染树是测试的取样对象，整片不渲染会让大量既有断言失去落点。
+    // 代价是首屏 DOM 不变小 —— 但用户看到的确实少了，而这是他提的问题。
+    const SECTIONS = [
+      { id: 'persona', cards: ['identity', 'user', 'style'] },
+      { id: 'preset', cards: ['preset'] },
+      { id: 'memory', cards: ['mem'] },
+      { id: 'behavior', cards: ['quality', 'trail'] },
+      // 变更记录不在这张表里：它常驻在页面顶部（RecentChanges），
+      // 不再是一张要切到「高级」栏、再点开才看得见的卡。
+      { id: 'advanced', cards: ['ws', 'preview'] }
+    ]
+    const SECTION_IDS = SECTIONS.map((item) => item.id)
+    // 上次看的是哪一栏。与折叠状态同样的处理：读写全吞异常，脏值一律回第一栏。
+    const ACTIVE_SECTION_KEY = 'dsh-anima:active-section'
+
     const INITIAL = {
       loading: true,
       saving: false,
@@ -82,6 +106,14 @@ window.__ModuleLoader__.load({
       clusters: [],
       conflicts: [],
       triageMeta: null,
+      // 巡夜记录（最近一次到点或手动跑的结果，无论报没报）。
+      // 只报有事之后，「没汇报」必须能反查成「真的没事」，否则沉默同时代表
+      // 「没事」和「它坏了」—— 这个字段就是那个反查出口。
+      patrolMeta: null,
+      // 质检钩子的运行计数（宿主内存态，重启清零）。
+      // 放在 state 里跟着 /state 一起来，因为它唯一的用途就是让用户一眼区分
+      // 「查了、没事」和「根本没查」—— 藏进日志等于要用的时候用不上。
+      qualityStats: null,
       workspaces: [],
       workspacePath: '',
       workspaceState: null,
@@ -182,6 +214,10 @@ window.__ModuleLoader__.load({
     const TRAIL_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/
     const TRAIL_SPEED_VALUES = ['slow', 'normal', 'fast']
     const TRAIL_WIDTH_VALUES = ['thin', 'normal', 'thick']
+    // 对账档位。与宿主 lib/config.mjs 的 LEDGER_LEVELS 同集合 —— 客户端不能 import
+    // 宿主模块（分成两个 bundle），所以这里必须手抄一份；抄错了宿主会按非法值静默
+    // 回落默认档，界面却仍显示用户选的那一档。改这里时同步改宿主那份。
+    const LEDGER_LEVELS = ['off', 'three', 'five']
     const TRAIL_PAD = 2
     // 尺寸自检上限：宿主尺寸异常（例如 observer 触发了自己）时宁可关掉光轨，
     // 也不要让它把输入框越撑越大。
@@ -236,6 +272,11 @@ window.__ModuleLoader__.load({
       nightlyHour: config?.memory?.nightlyHour ?? 3,
       maxPending: config?.memory?.maxPending ?? 200,
       maxInjected: config?.memory?.maxInjected ?? 40,
+      // 字符预算曾经只出现在表单里、没进载荷：输入框能打字、能显示，
+      // 但 configPayload 不带这个键 ⇒ 脏检测也看不到它变化 ⇒ 保存按钮一直是灰的，
+      // 用户以为自己设了，实际一个字节都没写盘。这类「看得见却存不下」的字段
+      // 比没有这个字段更坏。三个地方必须同时有它：默认值、载荷、宿主 schema。
+      maxInjectedChars: config?.memory?.maxInjectedChars ?? 4000,
       notifyOnSessionStart: config?.memory?.notifyOnSessionStart !== false
     })
 
@@ -252,6 +293,25 @@ window.__ModuleLoader__.load({
       trailColor: safeTrailColor(config?.trailColor),
       trailSpeed: TRAIL_SPEED_VALUES.includes(config?.trailSpeed) ? config.trailSpeed : 'slow',
       trailWidth: TRAIL_WIDTH_VALUES.includes(config?.trailWidth) ? config.trailWidth : 'thin'
+    })
+
+    /**
+     * 质检层五项（开关 / 对账档位 / 严格判词 / 机制检查 / 每轮最多报几条）。
+     *
+     * 与 memoryDefaults、toolDefaults 同一类：夹带在 config 里的子表单，不参与工作区
+     * 覆盖，但必须走同一条保存载荷 —— 少一个键就是「界面上能改、实际存不下」，
+     * maxInjectedChars 已经因为这件事被修过一次。
+     *
+     * 这五项此前只能靠 `/anima set quality.xxx=…` 改。加界面不是为了好看：这个钩子
+     * 是唯一会往对话里插消息的部件，而「它太吵了、我现在就想关」恰恰发生在会话进行
+     * 中 —— 那一刻人不会去翻命令帮助。
+     */
+    const qualityDefaults = (config) => ({
+      enabled: config?.quality?.enabled !== false,
+      ledgerLevel: LEDGER_LEVELS.includes(config?.quality?.ledgerLevel) ? config.quality.ledgerLevel : 'three',
+      strict: config?.quality?.strict !== false,
+      preStepCheck: config?.quality?.preStepCheck !== false,
+      maxFindingsInReminder: Number(config?.quality?.maxFindingsInReminder ?? 5)
     })
 
     // -------------------------------------------------------------------------
@@ -373,6 +433,12 @@ window.__ModuleLoader__.load({
           if (Array.isArray(payload.clusters)) s.clusters = payload.clusters
           if (Array.isArray(payload.conflicts)) s.conflicts = payload.conflicts
           if ('triageMeta' in payload) s.triageMeta = payload.triageMeta
+          // 巡夜记录也用 in 判定：它整体消失时界面必须回到「没跑过」，
+          // 而不是继续挂着上一次的「跑过了，没事」——那正是这个项目一直在防的形状。
+          if ('patrolMeta' in payload) s.patrolMeta = payload.patrolMeta ?? null
+          // 同上，用 in 判定：宿主重启后这个对象整体消失，若用真值判定会把上一轮的
+          // 计数一直挂在界面上 —— 那正好是「显示着检查过，其实这轮没检查」。
+          if ('qualityStats' in payload) s.qualityStats = payload.qualityStats ?? null
           if (payload.workspaces) s.workspaces = payload.workspaces
           // 审计随 state 一起来：客户端首次 RPC 通道未就绪时可能长时间挂起，
           // 少一次往返就少一个失败面。展开看全量时才单独打 /audit。
@@ -540,11 +606,60 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 手动跑一次巡夜（整理 + 体检 + 判定要不要汇报）。
+       *
+       * 与定时那次走同一条判据：如果手动能绕过「指纹没变就不说」，用户就永远
+       * 测不到定时触发的真实行为 —— 手点一次和它自己跑一次给出不同答案的机制，
+       * 等于没法验证。
+       */
+      async runPatrol() {
+        try {
+          const payload = await this.request('/api/anima/patrol', { method: 'POST', body: {} })
+          await this.loadState()
+          return payload
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        }
+      }
+
       async addMemory(text, note, scope) {
         try {
           await this.request('/api/anima/memory/add', { method: 'POST', body: { text, note, scope } })
           await this.loadState()
           return { ok: true }
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        }
+      }
+
+      /**
+       * 记忆体检：只读，不改任何东西。
+       *
+       * 刻意不叫 runAudit —— 已有的 audit 是「人设变更审计日志」，两者同名会让下一个人
+       * 以为体检会往审计日志里写东西。它什么也不写，只把机器能验的那两件事查一遍。
+       */
+      async runCheckup() {
+        try {
+          const payload = await this.request('/api/anima/memory/audit', { method: 'POST', body: {} })
+          return { ok: true, ...payload }
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        }
+      }
+
+      /**
+       * 改一条记忆的元数据（类型 / 状态 / 复核点 / 出处）。
+       *
+       * 与 decide 分开的理由和宿主侧一致：decide 是「要不要留下」的裁决，改元数据
+       * 是在已留下的条目上做整理。混成一个接口，将来误传参数会顺手改掉裁决状态。
+       * 成功后必须 loadState：徽章读的是 state 快照，不重拉就还在画旧值。
+       */
+      async updateMemoryMeta(id, patch) {
+        try {
+          const payload = await this.request('/api/anima/memory/meta', { method: 'POST', body: { id, ...patch } })
+          await this.loadState()
+          return { ok: true, ...payload }
         } catch (error) {
           return { ok: false, error: messageOf(error) }
         }
@@ -666,7 +781,27 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     const css = [
-      '.an-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 32px}',
+      // 底部留 72px：保存栏是 sticky bottom（约 52px 高），不留够它就会压住最后一行内容。
+      // 用户录屏里「还有 N 条」和保存栏文案叠在一行，就是这个原因 —— 底部空间不够。
+      '.an-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 72px}',
+      // ── 分区导航 ──
+      // 吸附在页面顶部：设置页本身就是一个可滚动的长面板，翻到第三张卡时还看得见
+      // 分区在哪一排，才谈得上「随时能切」。背景取页面底色而不是卡片色，避免与
+      // 下面的卡片混成一片。
+      '.an-sectnav{display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);position:sticky;top:0;z-index:20}',
+      '.an-sectnav-tab{padding:5px 14px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
+      '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary)}',
+      // 选中态必须一眼看得见。原来用 --dsw-alias-bg-base 当背景，那是**页面自身底色**，
+      // 垫在同一块的 layer-1 上等于没变（用户录屏里五个标签一个都看不出被选中）。
+      // 现在改成「更亮的表面 + 品牌色下划线 + 加粗」三重，深浅色主题下都成立。
+      '.an-sectnav-tab-on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary)}',
+      // ── 底部保存栏 ──
+      // 卡片里原来散着六处「保存」，每张卡各自一份、四条走的是同一个 doSave。
+      // 收成一条固定栏之后，「现在有改动没保存」这件事只有一个说法。
+      // 吸附在底部并压暗上缘：它盖住内容时仍看得出下面还有东西。
+      '.an-savebar{position:sticky;bottom:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1));box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
+      '.an-savebar-text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
+      '.an-savebar-text-dirty{color:var(--dsw-alias-label-warning,#d48806)}',
       '.an-card{padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
       '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}',
       '.an-card-title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}',
@@ -740,12 +875,27 @@ window.__ModuleLoader__.load({
       // ── 变更记录 ──
       // 每个字段一行；值可能很长（自定义指令、角色描述），所以给值留出换行空间
       // 而不是让整行被撑出卡片。
+      //
+      // 字段名这里刻意用正文字体，不用等宽 —— 等宽是它当初显示 `memory.maxInjected`
+      // 这类代码键名时留下的。现在显示的是「每次带几条记忆」，等宽反而像代码。
       '.an-audit-changes{margin-top:6px;display:flex;flex-direction:column;gap:4px}',
       '.an-audit-change{display:flex;gap:8px;font-size:11px;line-height:1.6;align-items:baseline}',
-      '.an-audit-key{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-family:Consolas,Menlo,monospace}',
+      '.an-audit-key{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}',
       '.an-audit-arrow{flex:1;min-width:0;color:var(--dsw-alias-label-tertiary);word-break:break-word}',
       '.an-audit-from{text-decoration:line-through;text-decoration-color:color-mix(in srgb, currentColor 50%, transparent)}',
       '.an-audit-to{color:var(--dsw-alias-label-primary)}',
+      // ── 「最近改了什么」（下拉式） ──
+      // 外形对齐下拉菜单而不是卡片：收起时只占**一行**（标题 + 条数 + 箭头），
+      // 展开才铺开明细。原先是常驻 3 条预览，用户反馈「太大占位置」——
+      // 那条预览每行都带「原值 → 新值」，一屏就被它吃掉三分之一。
+      '.an-recent{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
+      '.an-recent-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}',
+      '.an-recent-toggle:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}',
+      '.an-recent-caret{flex:0 0 auto;width:10px;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
+      '[data-an-recent="open"] .an-recent-caret{transform:rotate(90deg)}',
+      '.an-recent-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.an-recent-body{display:flex;flex-direction:column;gap:4px;padding:2px 12px 10px}',
+
       // ── 光轨 ──
       '.an-trail-svg{position:absolute;display:none;pointer-events:none;contain:strict;overflow:hidden;margin:0;padding:0;border:0;transform:none;animation:none;max-width:none;max-height:none}',
       '.an-trail-svg .an-trail-layer{stroke:var(--an-trail-color,#679EFE);stroke-linecap:round;animation:an-trail-run linear infinite}',
@@ -799,19 +949,19 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav.label': '灵台',
       'page.title': '灵台',
-      'page.desc': '这里管 AI 自己的名字与角色、按工作区的覆盖，以及带待审缓冲区的长期记忆。',
+      'page.desc': '这里管三件事：AI 叫什么、只对这个项目生效的设置、以及它会记住什么。',
 
       'identity.title': '助手身份',
       'identity.desc': '描述 AI 自己是谁。与下面「用户背景」方向相反 —— 那段描述你，这段描述它。',
       'identity.name': 'AI 的名字',
-      'identity.nameHint': '这是助手叫自己的名字，不是你对它的称呼（那个在下一张卡里）。留空则不注入身份段落。',
+      'identity.nameHint': '这是 AI 给自己的名字，不是你对它的称呼（那个在下一张卡里）。留空就不告诉它自己叫什么。',
       // 不给示例按钮，就在这里说清楚格式 —— 见 lib/wording.mjs 的 FIELD_EXAMPLES
       // 注释：名字被一键填进来太容易被原样留下，然后长期叫错。
       'identity.namePlaceholder': '例如「小沃」「阿榆」——两三个字，别用职位或昵称',
       'identity.role': '角色设定',
       'identity.roleHint': '例如「资深架构师，先给结论再解释权衡」。上限 800 字。',
-      'identity.enabled': '启用助手身份注入',
-      'identity.enabledHint': '关闭后本插件不再向提示词写入身份与记忆段落。',
+      'identity.enabled': '把助手身份告诉 AI',
+      'identity.enabledHint': '关闭后，这段描述不再发给 AI —— 它也就不知道自己是谁。',
 
       'user.title': '用户背景',
       'user.desc': '描述你本人。独立成段是为了不与上面的「助手身份」混读 —— 两段语义方向相反。',
@@ -852,7 +1002,7 @@ window.__ModuleLoader__.load({
       'wording.en': 'English',
 
       'preset.title': '人设预设',
-      'preset.desc': '预设是一套现成的人设字段组合。套用只覆盖它声明的字段，其余保持你当前的值。',
+      'preset.desc': '预设是一套现成的人设。套用时只换预设里写到的项，其余保持你现在填的。',
       'preset.pick': '套用预设',
       'preset.apply': '套用',
       'preset.applied': '已套用预设',
@@ -892,51 +1042,51 @@ window.__ModuleLoader__.load({
       'source.formatText': '格式 v{n}（介质上的格式戳；与插件版本是两套编号）',
 
       'ws.title': '工作区覆盖',
-      'ws.desc': '只覆盖下面填写的字段，留空即继承全局。覆盖写入工作区目录内的文件，可随项目一起 git。',
+      'ws.desc': '只有你填了字的那几项会被替换，留空就用全局设置。这些设置存在项目目录里的一个文件，可以跟项目一起提交。',
       'ws.pick': '选择工作区',
       'ws.none': '（未选择）',
       'ws.empty': '尚未登记任何工作区。',
-      'ws.enabled': '允许工作区覆盖',
-      'ws.dir': '覆盖目录名',
-      'ws.dirHint': '工作区根目录下的单段目录名，默认 .dsh-anima。',
-      'ws.filePath': '覆盖文件',
-      'ws.exists': '该工作区已有覆盖文件',
-      'ws.notExists': '该工作区尚无覆盖文件',
-      'ws.save': '保存覆盖',
-      'ws.clear': '清除全部覆盖',
-      'ws.saved': '工作区覆盖已保存',
-      'ws.cleared': '工作区覆盖已清除',
-      'ws.effective': '该工作区最终生效',
-      'ws.globalOnly': '未选择工作区时，下面显示的是全局值。',
-      'ws.hint': '留空 = 继承全局（灰色文字是当前全局值）',
-      'ws.styleHint': '本工作区若要用别的说法，写在这里；留空就沿用全局。',
-      'ws.inheritNow': '当前：继承全局 ——',
+      'ws.enabled': '允许这个项目用单独的设置',
+      'ws.dir': '设置存放的文件夹名',
+      'ws.dirHint': '放在项目根目录下的一个文件夹名，默认 .dsh-anima。',
+      'ws.filePath': '设置文件',
+      'ws.exists': '这个项目已经有设置文件',
+      'ws.notExists': '这个项目还没有设置文件',
+      'ws.save': '保存本项目的设置',
+      'ws.clear': '清除本项目的设置',
+      'ws.saved': '本项目的设置已保存',
+      'ws.cleared': '本项目的设置已清除',
+      'ws.effective': '这个项目最后实际生效的',
+      'ws.globalOnly': '没选项目时，下面显示的是全局设置。',
+      'ws.hint': '留空 = 用全局设置（灰字是全局当前填的值）',
+      'ws.styleHint': '这个项目想用别的说法就写在这里；留空就跟全局一样。',
+      'ws.inheritNow': '当前：跟全局一样 ——',
       'ws.inheritEmpty': '（全局这一项没填）',
-      'ws.overrideNow': '当前：本工作区覆盖全局',
+      'ws.overrideNow': '当前：这个项目用自己的设置',
       'ws.inherit': '继承全局',
       'ws.section.identity': '助手身份',
       'ws.section.user': '用户背景',
       'ws.section.style': '风格与特质',
 
       'mem.title': '长期记忆',
-      'mem.desc': '自动收集到的内容先进入待审缓冲区，由你逐条裁决；只有被采纳的才会进入提示词。',
+      'mem.desc': 'AI 自己攒下的东西不会直接用，先摆出来问你；你说要的，它才记住，以后也才用得上。',
       'mem.enabled': '启用记忆层',
       'mem.autoCapture': '自动收集候选',
-      'mem.autoCaptureHint': '模型调用 remember 工具时写入缓冲区，不直接生效。',
+      'mem.autoCaptureHint': 'AI 觉得该记的事会先存进这里等你点头，不会直接生效。',
       'mem.nightly': '每晚自动整理',
       'mem.nightlyHour': '整理时刻（0–23 时）',
-      'mem.notify': '会话开始时提醒待审数量',
-      'mem.maxPending': '缓冲区上限',
-      'mem.maxInjected': '最多注入条数',
-      'mem.maxInjectedHint': '0 = 一条都不注入（等于停用记忆注入）。',
-      'mem.maxInjectedChars': '最多注入字符',
-      'mem.maxInjectedCharsHint': '与条数取先到者；0 表示不限字符数。',
-      'mem.pending': '待审缓冲区',
-      'mem.adopted': '已采纳',
+      'mem.notify': '新对话开始时，提醒我有几条等你确认',
+      'mem.maxPending': '这里最多存几条',
+      'mem.maxInjected': '每次最多带上几条',
+      'mem.maxInjectedHint': '0 = 一条都不带（等于关掉记忆）。',
+      'mem.maxInjectedChars': '每次最多带多少字',
+      'mem.maxInjectedCharsHint': '跟条数比，先到哪个算哪个；0 = 不限字数。',
+      'mem.pending': '等你确认',
+      'mem.adopted': '已记住',
       'mem.discarded': '已丢弃',
-      'mem.emptyPending': '缓冲区为空。',
-      'mem.emptyAdopted': '还没有已采纳的记忆。',
-      'mem.adopt': '采纳',
+      'mem.emptyPending': '还没有等你确认的内容。',
+      'mem.emptyAdopted': '还什么都没记住。',
+      'mem.adopt': '记住它',
       'mem.discard': '丢弃',
       'mem.remove': '删除',
       'mem.triage': '立即整理',
@@ -946,15 +1096,100 @@ window.__ModuleLoader__.load({
       'mem.addScope': '作用域（可选，例如工作区路径）',
       'mem.lastTriage': '上次整理',
       'mem.triageDone': '整理完成',
-      'mem.adoptedTag': '已采纳',
-      'mem.pendingTag': '待审',
+      'mem.adoptedTag': '已记住',
+      'mem.pendingTag': '待确认',
       'mem.discardedTag': '已丢弃',
       'mem.credential': '含凭据的内容会被直接拒收',
+      // ── 记忆的分类与出处（这几项以前只在 JSON 里能看到）──
+      'mem.type': '类型',
+      'mem.typeFact': '事实',
+      'mem.typePreference': '偏好',
+      'mem.typeStance': '立场',
+      'mem.typeEvent': '事件',
+      'mem.verifyAt': '到期再看看',
+      'mem.verifyOverdue': '该复查了',
+      'mem.sourceRef': '出处',
+      'mem.sourceRefNone': '没写出处',
+      'mem.stateSuperseded': '曾如此',
+      'mem.stateContradicted': '有争议',
+      'mem.stateDropped': '已删除',
+      'mem.stateHint': '「曾如此」= 你后来改过主意；「有争议」= 跟后来发生的事对不上、还没定论。两者说的都是过去，不是现在的样子。',
+      // ── 记忆体检（只查机器能查的两件事）──
+      'checkup.run': '体检',
+      'checkup.running': '正在查…',
+      'checkup.done': '体检完成',
+      'checkup.clean': '机器能查的两件事都通过了：记忆里提到的文件路径都还在，也没有到了复查日期的。注意——这**不**代表记忆内容仍然成立，那只有你知道。',
+      'checkup.summary': '查了 {checked} 条，{flagged} 条有事。',
+      'checkup.note': '只查两件事：记忆里提到的文件路径还在不在、有没有到了复查日期的。它不判断内容对不对、也不判断两条记忆是不是在说同一件事。',
+      'checkup.kindPathMissing': '路径不存在',
+      'checkup.kindPathPrefixMissing': '路径前缀不存在',
+      'checkup.kindPathUnprobed': '探不到（不是不存在）',
+      'checkup.kindVerifyExpired': '该复查了',
+      'checkup.kindOther': '其它',
+      'checkup.suggest': '建议',
+      'checkup.suggestNone': '只提示，不替你改',
+      'checkup.command': '命令',
+      'checkup.apply': '按建议标为「有争议」',
+      'checkup.applied': '已标为「有争议」',
+      'checkup.stale': '结果来自上一次体检，记忆可能已经变了。',
+      // ── 巡夜（只报有事；沉默必须能反查成「真的没事」）──
+      'patrol.run': '现在查一次',
+      'patrol.running': '正在查…',
+      'patrol.last': '上次自查',
+      'patrol.never': '还没查过。这不是「没事」—— 是「没查」。',
+      'patrol.reported': '跑过了，报过',
+      'patrol.silent': '查过了，没发现新情况，所以没有提醒我',
+      'patrol.pending': '待确认',
+      'patrol.flagged': '体检问题',
+      'patrol.removed': '整理动过',
+      'patrol.toastSilent': '查完了：没发现新情况，所以没有提醒。记录留在下方。',
+      'patrol.toastReported': '查完了：已提醒你的 {n} 个对话。',
+      // 巡夜记录里的体检明细：只有数字等于「我知道有 3 条问题，但不告诉我是哪 3 条」。
+      'patrol.details': '这次体检点到的问题',
+      'patrol.moreDropped': '另有 {n} 条没存下来（只留最近 20 条，要看完整的点「体检」重算）',
+      'patrol.detailNoEvidence': '没有留下证据行',
+      // ── 元数据编辑 ──
+      'mem.editMeta': '改元数据',
+      'mem.editMetaHide': '收起',
+      'mem.saveMeta': '保存',
+      'mem.metaSaved': '元数据已更新',
+      'mem.metaNoChange': '没有任何改动',
+      'mem.metaTypeHint': '类型决定衰减窗口：事实不因年龄衰减，偏好 540 天、立场 365 天、事件 180 天。',
+      'mem.metaStateHint': '「曾如此 / 有争议 / 已删除」说的都是过去，不是现在的样子。改回「现行」会同时清掉它被哪条取代的记录。',
+      'mem.metaVerifyHint': '格式 YYYY-MM-DD。过去日期会被拒收——要标过期请直接改状态。',
+      'mem.metaSourceHint': '可核对的出处：消息编号、文件:行号、链接。没有就留空，不要编。',
+      'mem.stateCurrent': '现行',
+
+      'quality.title': '回答质检',
+      'quality.desc': '每轮回答结束前，由代码（不是模型）按固定判据检查一遍形状；抓到问题就往下一条消息里插一条提醒。它判形状，不判内容对错。',
+      'quality.enabled': '启用质检层',
+      'quality.enabledHint': '关掉之后：发给 AI 的十二条与对账规则不再带上，每轮的自动检查也停止。',
+      'quality.ledgerLevel': '对账档位',
+      'quality.ledger.off': '关闭（不要求对账块）',
+      'quality.ledger.three': '三档（数字 / 自查 / 引用）',
+      'quality.ledger.five': '五档（三档 + 每类各写一行）',
+      'quality.ledgerLevelHint': '出现这几类形状时必须写【对账】块。关掉它，R01 / R02 也就无从判起。',
+      'quality.strict': '严格判词',
+      'quality.strictHint': '多判三条：R08 置信度错配、R11 稻草人、R12 越界自信。误报变多时通常是关这一项，而不是关掉整个质检层。',
+      'quality.preStepCheck': '每轮机制检查',
+      'quality.preStepCheckHint': '关掉后不再往对话里插提醒，但发给 AI 的规则还在。',
+      'quality.maxFindings': '每轮最多报几条',
+      'quality.maxFindingsHint': '超出只写「还有 N 条未列出」。报太多会让提醒本身变成噪音。',
+      'quality.stats': '运行计数（本进程内）',
+      'quality.statsUnknown': '还没有拿到运行计数 —— 这不等于「没问题」。',
+      'quality.statsIdle': '检查次数为 0：这一整套没在工作。别把「没有提醒」当成「没有问题」。',
+      'quality.statsChecks': '已检查',
+      'quality.statsReminders': '已提醒',
+      'quality.statsSuppressed': '被每轮上限压住',
+      'quality.statsLast': '最近一次',
+      'quality.statsChars': '字',
+      'quality.statsFindings': '判词',
+      'quality.statsNone': '无',
       // ── 一键导入（Phase ②）──
       'imp.open': '导入外部 AI 的记忆',
-      'imp.step1': '第 1 步：把下面这段提示词复制到其它 AI 的对话里',
+      'imp.step1': '第 1 步：把下面这段话复制到别的 AI 的对话里',
       'imp.step1Hint': '在你用得最多的那个 AI 里发一次，让它把你的偏好整理成一份清单。',
-      'imp.copy': '复制提示词',
+      'imp.copy': '复制这段话',
       'imp.copied': '已复制',
       'imp.copyFailed': '复制失败，请手动选中后复制',
       'imp.step2': '第 2 步：把结果粘贴到下面',
@@ -981,29 +1216,40 @@ window.__ModuleLoader__.load({
       'imp.overflowHint': '一次最多 {max} 条。剩下的请另开一次导入。',
       'imp.skippedHint': '另有 {n} 条碎片（过短或只是小标题）被忽略。',
       'imp.emptyResult': '没有解析出可导入的内容。若你粘贴的是纯列表，请确认每行以「- 」或「1. 」开头。',
-      'imp.done': '已导入 {n} 条到待审缓冲区，请在上面逐条裁决。',
+      'imp.done': '已导入 {n} 条，等你确认——在上面逐条选要还是不要。',
       'imp.rejectedSome': '{n} 条未通过校验，未导入。',
       'imp.selected': '已选 {n} / {total} 条',
       // 同义提示：这条跟待审缓冲区里某条候选几乎一样。只提示，不替用户合并或丢弃 ——
       // 合并意味着生成一段他没说过的话（与 clusterPending 同一立场）。
-      'imp.overlap': '待审缓冲区里已有一条很像：{text}',
+      'imp.overlap': '等确认的里面已经有一条很像：{text}',
 
-      'inj.title': '注入情况',
-      'inj.toggle': '查看每条为什么进 / 不进',
+      'inj.title': '哪些记忆进了对话',
+      'inj.toggle': '查看每一条为什么带上 / 没带上',
       'inj.hide': '收起',
-      'inj.desc': '只有已采纳的记忆会进提示词，而且受条数与字符两个上限约束，先到者为准。',
-      'inj.empty': '还没有已采纳的记忆。',
+      'inj.desc': '只有你说要记住的那些才会带给 AI，而且受条数和字数两个上限限制，先到哪个算哪个。',
+      'inj.empty': '还什么都没记住。',
       'inj.count': '条数',
       'inj.chars': '字符',
-      'inj.included': '已注入',
-      'inj.excluded': '未注入',
+      // 只在真的有超窗条目时才画。现在 21 条全是 7 天龄、全部 fresh，
+      // 常显会长期显示「0 条」，变成一条永远不动的装饰；而装饰一旦习惯，
+      // 真正跳成「3 条」时也不会被注意。
+      'inj.decayed': '其中已超窗',
+      'inj.included': '带上了',
+      'inj.excluded': '没带上',
       'inj.cwd': '按工作区',
       'inj.cwdNone': '当前会话没有工作区信息',
+      'inj.bytes': '占用字节',
+      'inj.limitedBy': '卡在',
+      'inj.limitedByCount': '条数上限',
+      'inj.limitedByChars': '字符预算',
+      'inj.limitedByNone': '没卡',
+      // 这条必须说清「不是没有」，否则用户看到「0 条注入」会先去查 bug。
+      'inj.omitted': '因预算未带上',
 
       'cluster.title': '疑似重复的候选',
       'cluster.similarity': '相似度',
-      'conflict.title': '与已采纳记忆重复',
-      'conflict.adopted': '已采纳',
+      'conflict.title': '与已记住的内容重复',
+      'conflict.adopted': '已记住',
 
       'audit.title': '变更记录',
       'audit.desc': '谁在什么时候改了这一页的哪一项。模型通过工具改人设时默认也要问你，但那个开关可以关掉 —— 关掉之后，这里是唯一的凭证。',
@@ -1025,20 +1271,29 @@ window.__ModuleLoader__.load({
       'audit.emptyValue': '（空）',
       'audit.note': '备注',
 
-      'preview.title': '提示词预览',
-      'preview.toggle': '显示本插件注入的内容',
-      'preview.desc': '只读。展示这段人设真正会写进提示词的样子 —— 含尚未保存的修改。',
-      'preview.empty': '当前没有可注入的内容。',
+      'preview.title': 'AI 实际看到的内容',
+      'preview.toggle': '显示我给 AI 加的内容',
+      'preview.desc': '只读。看看这段人设真正发给 AI 时长什么样 —— 包括还没保存的改动。',
+      'preview.empty': '现在没有要带给 AI 的内容。',
       'preview.live': '已含未保存的修改',
-      'preview.saved': '按已保存的设置渲染',
+      'preview.saved': '按已保存的设置显示',
       'preview.refresh': '刷新预览',
-      'preview.loading': '渲染中…',
+      'preview.loading': '正在生成预览…',
       'preview.chars': '字符数',
-      'preview.invalidTitle': '以下草稿没有被采纳（预览用的是上一次的合法值）：',
+      'preview.invalidTitle': '以下几项暂时不算数（预览用的是上一次能用的值）：',
 
       // 卡片折叠
       'card.collapse': '收起',
       'card.expand': '展开',
+      // 分区名（设置页顶部的横排标签）。用名词而不是动词：它们标的是「这里面
+      // 装的是什么」，不是「点了会做什么」。
+      'section.persona': '人设',
+      'section.preset': '预设',
+      'section.memory': '记忆',
+      'section.behavior': '表现',
+      'section.advanced': '高级',
+      'savebar.clean': '没有未保存的修改',
+      'savebar.dirty': '有未保存的修改',
 
       'common.save': '保存',
       'common.reset': '恢复默认',
@@ -1060,7 +1315,7 @@ window.__ModuleLoader__.load({
 
       // 光轨设置卡
       'trail.title': '输入框光轨',
-      'trail.desc': '助手回复时，输入框外圈会有一道流动的光。纯前端动效，不写入提示词。',
+      'trail.desc': '助手回复时，输入框外圈会有一道流动的光。纯界面效果，不会发给 AI。',
       'trail.enabled': '显示光轨',
       'trail.color': '颜色',
       'trail.colorHint': '六位十六进制，例如 #679EFE',
@@ -1086,23 +1341,61 @@ window.__ModuleLoader__.load({
       'proposal.reject': '拒绝',
       'proposal.confirmed': '已确认并生效',
       'proposal.rejected': '已拒绝，配置未改动',
-      'proposal.gone': '该提议已不存在（进程重启会清掉待确认提议）'
+      'proposal.gone': '该提议已不存在（进程重启会清掉待确认提议）',
+
+      // 改动记录里的字段名（人话版）
+      // 用途：改动记录原来显示 agentName / memory.maxInjected 这类代码键名。
+      // 这里逐条换成「屏幕上这句话是什么意思」，键名必须与 lib/store.mjs 的 diffConfig 对齐。
+      'field.enabled': '总开关',
+      'field.agentName': 'AI 的名字',
+      'field.agentRole': 'AI 的角色',
+      'field.addressUserAs': '它怎么称呼我',
+      'field.userOccupation': '我的职业',
+      'field.userBio': '关于我',
+      'field.style': '说话风格',
+      'field.headingLists': '标题与列表',
+      'field.emoji': '表情符号',
+      'field.tables': '表格',
+      'field.replyLength': '回复长度',
+      'field.language': '语言',
+      'field.customInstructions': '补充指令',
+      'field.requireToolConfirmation': '改人设前要我确认',
+      'field.trailEnabled': '光轨',
+      'field.trailColor': '光轨颜色',
+      'field.trailSpeed': '光轨速度',
+      'field.trailWidth': '光轨粗细',
+      'field.workspaceOverridesEnabled': '按项目单独设置',
+      'field.workspaceFileDir': '工作区文件位置',
+      'field.presets': '预设列表',
+      'field.memory.enabled': '记忆总开关',
+      'field.memory.autoCapture': '自动收集记忆',
+      'field.memory.nightlyTriage': '夜间自动整理',
+      'field.memory.nightlyHour': '整理时间',
+      'field.memory.maxPending': '待确认条数上限',
+      'field.memory.maxInjected': '每次带几条记忆',
+      'field.memory.maxInjectedChars': '记忆占用字数上限',
+      'field.memory.notifyOnSessionStart': '新会话时提醒',
+      'field.quality.enabled': '质检开关',
+      'field.quality.ledgerLevel': '记录详细程度',
+      'field.quality.strict': '严格模式',
+      'field.quality.preStepCheck': '动手前先自查',
+      'field.quality.maxFindingsInReminder': '提醒里最多几条'
     }
 
     const en = {
       'nav.label': 'Persona & Memory',
       'page.title': 'Persona & Memory',
-      'page.desc': 'Owns the assistant\'s own name and role, per-workspace overrides, and long-term memory with a review buffer.',
+      'page.desc': 'Three things live here: what the assistant calls itself, settings that only apply to this project, and what it remembers.',
 
       'identity.title': 'Assistant identity',
       'identity.desc': 'Describes who the assistant is. Opposite in direction to "Your background" below — that card describes you, this one describes the assistant.',
       'identity.name': 'Assistant name',
-      'identity.nameHint': 'The name the assistant calls itself — not how you address it (that is the next card). Leave empty to skip the identity section.',
+      'identity.nameHint': 'The name the assistant calls itself — not how you address it (that is the next card). Leave empty and it will not be told its own name.',
       'identity.namePlaceholder': 'e.g. "Wally", "Nova" — a word or two, not a job title or a pet name',
       'identity.role': 'Role',
       'identity.roleHint': 'For example "senior architect; conclusion first, then tradeoffs". Max 800 characters.',
-      'identity.enabled': 'Inject assistant identity',
-      'identity.enabledHint': 'When off, no identity or memory section is written to the prompt.',
+      'identity.enabled': 'Tell the assistant who it is',
+      'identity.enabledHint': 'When off, this description is no longer sent — the assistant will not know who it is.',
 
       'user.title': 'Your background',
       'user.desc': 'Describes you. It is a separate section so the model cannot merge it with the assistant identity above — the two point in opposite directions.',
@@ -1141,7 +1434,7 @@ window.__ModuleLoader__.load({
       'wording.en': 'English',
 
       'preset.title': 'Persona presets',
-      'preset.desc': 'A preset is a ready-made set of persona fields. Applying one overrides only the fields it declares; everything else keeps your current value.',
+      'preset.desc': 'A preset is a ready-made persona. Applying it replaces only the items it covers; everything else keeps what you have now.',
       'preset.pick': 'Apply a preset',
       'preset.apply': 'Apply',
       'preset.applied': 'Preset applied',
@@ -1174,51 +1467,51 @@ window.__ModuleLoader__.load({
       'source.formatText': "v{n} (the medium's format stamp — a separate numbering from the plugin version)",
 
       'ws.title': 'Workspace override',
-      'ws.desc': 'Only the fields you fill in are overridden; empty fields inherit the global value. The override lives inside the workspace and can be committed with the project.',
+      'ws.desc': 'Only the items you fill in are replaced; empty ones use the global setting. These settings live in one file inside the project, so they can be committed with it.',
       'ws.pick': 'Workspace',
       'ws.none': '(none selected)',
       'ws.empty': 'No workspace registered yet.',
-      'ws.enabled': 'Allow workspace overrides',
-      'ws.dir': 'Override directory name',
-      'ws.dirHint': 'A single directory name under the workspace root; defaults to .dsh-anima.',
-      'ws.filePath': 'Override file',
-      'ws.exists': 'This workspace has an override file',
-      'ws.notExists': 'No override file yet',
-      'ws.save': 'Save override',
-      'ws.clear': 'Clear all overrides',
-      'ws.saved': 'Workspace override saved',
-      'ws.cleared': 'Workspace override cleared',
-      'ws.effective': 'Effective in this workspace',
-      'ws.globalOnly': 'With no workspace selected, the values below are the global ones.',
-      'ws.hint': 'Empty means inherit from global (grey text is the current global value)',
-      'ws.styleHint': 'Write a different wording for this workspace; leave empty to keep using the global one.',
-      'ws.inheritNow': 'Now: inherited from global —',
+      'ws.enabled': 'Let this project use its own settings',
+      'ws.dir': 'Folder name for these settings',
+      'ws.dirHint': 'A single folder name under the project root; defaults to .dsh-anima.',
+      'ws.filePath': 'Settings file',
+      'ws.exists': 'This project already has a settings file',
+      'ws.notExists': 'This project has no settings file yet',
+      'ws.save': 'Save this project\'s settings',
+      'ws.clear': 'Clear this project\'s settings',
+      'ws.saved': 'This project\'s settings saved',
+      'ws.cleared': 'This project\'s settings cleared',
+      'ws.effective': 'What actually applies in this project',
+      'ws.globalOnly': 'With no project selected, the values below are the global ones.',
+      'ws.hint': 'Empty means use the global setting (grey text is the global value)',
+      'ws.styleHint': 'Write a different wording for this project; leave empty to keep the global one.',
+      'ws.inheritNow': 'Now: same as global —',
       'ws.inheritEmpty': '(global field is empty)',
-      'ws.overrideNow': 'Now: this workspace overrides global',
+      'ws.overrideNow': 'Now: this project uses its own settings',
       'ws.inherit': 'Inherit global',
       'ws.section.identity': 'Assistant identity',
       'ws.section.user': 'Your background',
       'ws.section.style': 'Style and traits',
 
       'mem.title': 'Long-term memory',
-      'mem.desc': 'Captured items land in a review buffer first. Only what you adopt reaches the prompt.',
+      'mem.desc': 'Anything the assistant picks up is shown to you first. Only what you say yes to gets remembered — and only then does it get used.',
       'mem.enabled': 'Enable memory',
       'mem.autoCapture': 'Auto-capture candidates',
-      'mem.autoCaptureHint': 'The remember tool writes to the buffer; nothing takes effect directly.',
+      'mem.autoCaptureHint': 'Things the assistant thinks are worth keeping wait here for your yes or no; nothing takes effect directly.',
       'mem.nightly': 'Nightly tidy-up',
       'mem.nightlyHour': 'Hour (0–23)',
-      'mem.notify': 'Mention pending count on session start',
-      'mem.maxPending': 'Buffer limit',
-      'mem.maxInjected': 'Max injected',
-      'mem.maxInjectedHint': '0 = inject nothing at all (memory injection stops).',
-      'mem.maxInjectedChars': 'Max injected characters',
-      'mem.maxInjectedCharsHint': 'Whichever comes first with the count ceiling; 0 means no character limit.',
-      'mem.pending': 'Review buffer',
-      'mem.adopted': 'Adopted',
+      'mem.notify': 'Mention how many are waiting when a chat starts',
+      'mem.maxPending': 'How many can wait here',
+      'mem.maxInjected': 'How many to carry per turn',
+      'mem.maxInjectedHint': '0 = carry none at all (memory effectively off).',
+      'mem.maxInjectedChars': 'How many characters to carry',
+      'mem.maxInjectedCharsHint': 'Whichever limit is hit first; 0 means no character limit.',
+      'mem.pending': 'Waiting for your yes or no',
+      'mem.adopted': 'Remembered',
       'mem.discarded': 'Discarded',
-      'mem.emptyPending': 'The buffer is empty.',
-      'mem.emptyAdopted': 'No adopted memories yet.',
-      'mem.adopt': 'Adopt',
+      'mem.emptyPending': 'Nothing is waiting for your yes or no.',
+      'mem.emptyAdopted': 'Nothing remembered yet.',
+      'mem.adopt': 'Remember it',
       'mem.discard': 'Discard',
       'mem.remove': 'Delete',
       'mem.triage': 'Tidy up now',
@@ -1228,15 +1521,98 @@ window.__ModuleLoader__.load({
       'mem.addScope': 'Scope (optional, e.g. a workspace path)',
       'mem.lastTriage': 'Last tidy-up',
       'mem.triageDone': 'Tidy-up finished',
-      'mem.adoptedTag': 'adopted',
-      'mem.pendingTag': 'pending',
+      'mem.adoptedTag': 'remembered',
+      'mem.pendingTag': 'waiting',
       'mem.discardedTag': 'discarded',
       'mem.credential': 'Content containing credentials is rejected outright',
+      'mem.type': 'Type',
+      'mem.typeFact': 'fact',
+      'mem.typePreference': 'preference',
+      'mem.typeStance': 'stance',
+      'mem.typeEvent': 'event',
+      'mem.verifyAt': 'Recheck on',
+      'mem.verifyOverdue': 'due for a recheck',
+      'mem.sourceRef': 'Source',
+      'mem.sourceRefNone': 'no source recorded',
+      'mem.stateSuperseded': 'was true',
+      'mem.stateContradicted': 'contested',
+      'mem.stateDropped': 'removed',
+      'mem.stateHint': '“was true” means you later changed your mind; “contested” means it clashes with later facts and has not been settled. Both describe the past, not the present.',
+      // ── Memory checkup (only the two machine-checkable things) ──
+      'checkup.run': 'Check up',
+      'checkup.running': 'Checking…',
+      'checkup.done': 'Checkup done',
+      'checkup.clean': 'Both machine-checkable things passed: every file path mentioned in a memory still exists, and nothing is past its recheck date. Note — this does **not** mean the memories still hold; only you know that.',
+      'checkup.summary': '{checked} checked, {flagged} with findings.',
+      'checkup.note': 'Only two things are checked: whether the file paths mentioned in a memory still exist, and whether a recheck date has passed. It does not judge whether the content is right, nor whether two memories are about the same thing.',
+      'checkup.kindPathMissing': 'path missing',
+      'checkup.kindPathPrefixMissing': 'path prefix missing',
+      'checkup.kindPathUnprobed': 'could not probe (not the same as missing)',
+      'checkup.kindVerifyExpired': 'recheck date passed',
+      'checkup.kindOther': 'other',
+      'checkup.suggest': 'Suggestion',
+      'checkup.suggestNone': 'flagged only, not changed for you',
+      'checkup.command': 'Command',
+      'checkup.apply': 'Mark as “contested” as suggested',
+      'checkup.applied': 'Marked as “contested”',
+      'checkup.stale': 'These results are from the previous checkup; the memories may have changed since.',
+      // ── Patrol (report only when there is news; silence must be auditable) ──
+      'patrol.run': 'Check now',
+      'patrol.running': 'Checking…',
+      'patrol.last': 'Last check',
+      'patrol.never': 'This has never run. That is not “all clear” — it is “not run”.',
+      'patrol.reported': 'ran, reported',
+      'patrol.silent': 'ran, found nothing new, so stayed quiet',
+      'patrol.pending': 'waiting',
+      'patrol.flagged': 'checkup findings',
+      'patrol.removed': 'triage touched',
+      'patrol.toastSilent': 'Check finished: nothing new, so nothing was reported. The record is kept below.',
+      'patrol.toastReported': 'Check finished: told {n} of your chats.',
+      'patrol.details': 'What this checkup flagged',
+      'patrol.moreDropped': '{n} more were not stored (only the latest 20 are kept; run the checkup for the full list)',
+      'patrol.detailNoEvidence': 'no evidence line was recorded',
+      // ── Metadata editing ──
+      'mem.editMeta': 'Edit metadata',
+      'mem.editMetaHide': 'Collapse',
+      'mem.saveMeta': 'Save',
+      'mem.metaSaved': 'Metadata updated',
+      'mem.metaNoChange': 'Nothing changed',
+      'mem.metaTypeHint': 'The type sets the decay window: facts never age out, preferences 540 days, stances 365, events 180.',
+      'mem.metaStateHint': '“was true” / “contested” / “removed” all describe the past, not the present. Setting it back to current also clears the record of which entry superseded it.',
+      'mem.metaVerifyHint': 'Format YYYY-MM-DD. A date in the past is rejected — to mark it expired, change the state instead.',
+      'mem.metaSourceHint': 'A checkable source: message id, file:line, URL. Leave it empty rather than making one up.',
+      'mem.stateCurrent': 'current',
+
+      'quality.title': 'Answer check',
+      'quality.desc': 'Before each turn ends, code (not the model) checks the shape of the answer against fixed rules; if something is caught, a notice is inserted into the next message. It judges shape, not whether the content is right.',
+      'quality.enabled': 'Enable the check layer',
+      'quality.enabledHint': 'Off means: the twelve rules and the ledger rules are no longer sent with the prompt, and the mechanical check stops running.',
+      'quality.ledgerLevel': 'Ledger level',
+      'quality.ledger.off': 'Off (no ledger block required)',
+      'quality.ledger.three': 'Three tiers (numbers / self-claims / citations)',
+      'quality.ledger.five': 'Five tiers (three, plus one line per class)',
+      'quality.ledgerLevelHint': 'When these shapes appear, a ledger block is required. With this off, R01 and R02 cannot be judged at all.',
+      'quality.strict': 'Strict verdicts',
+      'quality.strictHint': 'Judges three more: R08 confidence mismatch, R11 straw man, R12 overreach. When false positives pile up, turn this off rather than the whole layer.',
+      'quality.preStepCheck': 'Mechanical check each turn',
+      'quality.preStepCheckHint': 'Off means no notices are inserted, though the rules sent to the assistant stay in place.',
+      'quality.maxFindings': 'Max findings per turn',
+      'quality.maxFindingsHint': 'Beyond this, only "N more not listed" is written. Reporting too many turns the notice itself into noise.',
+      'quality.stats': 'Run counters (this process)',
+      'quality.statsUnknown': 'No run counters yet — this does not mean nothing was wrong.',
+      'quality.statsIdle': 'Zero checks: none of this is running. Do not read "no notices" as "nothing was wrong".',
+      'quality.statsChecks': 'Checked',
+      'quality.statsReminders': 'Notices sent',
+      'quality.statsSuppressed': 'Suppressed by per-turn cap',
+      'quality.statsLast': 'Last run',
+      'quality.statsChars': 'chars',
+      'quality.statsFindings': 'Findings',
+      'quality.statsNone': 'none',
       // ── Import from another AI (Phase ②) ──
       'imp.open': 'Import memories from another AI',
-      'imp.step1': 'Step 1 — copy this prompt into another AI conversation',
+      'imp.step1': 'Step 1 — copy this text into another AI conversation',
       'imp.step1Hint': 'Send it once in whichever AI you use most, and let it write up your preferences as a list.',
-      'imp.copy': 'Copy prompt',
+      'imp.copy': 'Copy this text',
       'imp.copied': 'Copied',
       'imp.copyFailed': 'Copy failed — select the text and copy it manually',
       'imp.step2': 'Step 2 — paste the result below',
@@ -1263,29 +1639,36 @@ window.__ModuleLoader__.load({
       'imp.overflowHint': 'At most {max} items per import. Import the rest in another pass.',
       'imp.skippedHint': '{n} fragments (too short, or just headings) were ignored.',
       'imp.emptyResult': 'Nothing importable was found. If you pasted a plain list, make sure each line starts with "- " or "1. ".',
-      'imp.done': 'Imported {n} item(s) into the review buffer — decide on them above.',
+      'imp.done': 'Imported {n} item(s) — they are waiting for your yes or no above.',
       'imp.rejectedSome': '{n} item(s) failed validation and were not imported.',
       'imp.selected': '{n} of {total} kept',
       // Near-duplicate notice: this item closely matches a pending candidate already in
       // the review buffer. Notice only — never merged or dropped on the user's behalf.
-      'imp.overlap': 'Already looks like this pending item: {text}',
+      'imp.overlap': 'Something very similar is already waiting: {text}',
 
-      'inj.title': 'Prompt injection',
-      'inj.toggle': 'Show why each item is in or out',
+      'inj.title': 'What went into the conversation',
+      'inj.toggle': 'Show why each item was sent or not',
       'inj.hide': 'Hide',
-      'inj.desc': 'Only adopted memories reach the prompt, and only within both the count and the character ceiling — whichever comes first.',
-      'inj.empty': 'No adopted memories yet.',
+      'inj.desc': 'Only what you chose to remember is sent to the assistant, and only within both the item and character ceilings — whichever comes first.',
+      'inj.empty': 'Nothing remembered yet.',
       'inj.count': 'items',
       'inj.chars': 'characters',
-      'inj.included': 'In',
-      'inj.excluded': 'Out',
+      'inj.decayed': 'Past their window',
+      'inj.included': 'sent',
+      'inj.excluded': 'not sent',
       'inj.cwd': 'By workspace',
       'inj.cwdNone': 'This session carries no workspace information',
+      'inj.bytes': 'bytes used',
+      'inj.limitedBy': 'limited by',
+      'inj.limitedByCount': 'item ceiling',
+      'inj.limitedByChars': 'character budget',
+      'inj.limitedByNone': 'not limited',
+      'inj.omitted': 'left out by budget',
 
       'cluster.title': 'Possibly duplicate candidates',
       'cluster.similarity': 'Similarity',
-      'conflict.title': 'Duplicates an adopted memory',
-      'conflict.adopted': 'Adopted',
+      'conflict.title': 'Duplicates something already remembered',
+      'conflict.adopted': 'Remembered',
 
       'audit.title': 'Change log',
       'audit.desc': 'Who changed which setting on this page, and when. The model asks before rewriting your persona by default — but that switch can be turned off, and once it is, this log is the only record.',
@@ -1307,20 +1690,27 @@ window.__ModuleLoader__.load({
       'audit.emptyValue': '(empty)',
       'audit.note': 'Note',
 
-      'preview.title': 'Prompt preview',
-      'preview.toggle': 'Show what this plugin injects',
-      'preview.desc': 'Read-only. Shows how this persona will actually read in the prompt, including unsaved edits.',
-      'preview.empty': 'Nothing to inject right now.',
+      'preview.title': 'What the assistant actually sees',
+      'preview.toggle': 'Show what this plugin adds',
+      'preview.desc': 'Read-only. Shows how this persona will actually read to the assistant — including unsaved edits.',
+      'preview.empty': 'There is nothing to send to the assistant right now.',
       'preview.live': 'Includes unsaved edits',
-      'preview.saved': 'Rendered from saved settings',
+      'preview.saved': 'From saved settings',
       'preview.refresh': 'Refresh preview',
-      'preview.loading': 'Rendering…',
+      'preview.loading': 'Building preview…',
       'preview.chars': 'Characters',
-      'preview.invalidTitle': 'These draft fields were not accepted (the preview uses the last valid values):',
+      'preview.invalidTitle': 'These drafts are not counted yet (the preview uses the last valid value):',
 
       // Card folding
       'card.collapse': 'Collapse',
       'card.expand': 'Expand',
+      'section.persona': 'Persona',
+      'section.preset': 'Presets',
+      'section.memory': 'Memory',
+      'section.behavior': 'Behavior',
+      'section.advanced': 'Advanced',
+      'savebar.clean': 'No unsaved changes',
+      'savebar.dirty': 'Unsaved changes',
 
       'common.save': 'Save',
       'common.reset': 'Reset to defaults',
@@ -1342,7 +1732,7 @@ window.__ModuleLoader__.load({
 
       // Trail card
       'trail.title': 'Composer trail',
-      'trail.desc': 'A light runs around the input box while the assistant is replying. Pure front-end effect; never written into the prompt.',
+      'trail.desc': 'While the assistant replies, a light runs around the input box. A pure UI effect — it is never sent to the assistant.',
       'trail.enabled': 'Show the trail',
       'trail.color': 'Color',
       'trail.colorHint': 'Six hex digits, e.g. #679EFE',
@@ -1368,7 +1758,45 @@ window.__ModuleLoader__.load({
       'proposal.reject': 'Reject',
       'proposal.confirmed': 'Approved and applied',
       'proposal.rejected': 'Rejected; nothing changed',
-      'proposal.gone': 'That proposal is gone (pending proposals are dropped when the process restarts)'
+      'proposal.gone': 'That proposal is gone (pending proposals are dropped when the process restarts)',
+
+      // Field names inside the change log (plain-English versions).
+      // The change log used to print raw config keys such as agentName or
+      // memory.maxInjected. These keys must stay aligned with diffConfig in lib/store.mjs.
+      'field.enabled': 'On/off',
+      'field.agentName': 'Assistant name',
+      'field.agentRole': 'Assistant role',
+      'field.addressUserAs': 'What it calls you',
+      'field.userOccupation': 'Your occupation',
+      'field.userBio': 'About you',
+      'field.style': 'Tone',
+      'field.headingLists': 'Headings and lists',
+      'field.emoji': 'Emoji',
+      'field.tables': 'Tables',
+      'field.replyLength': 'Reply length',
+      'field.language': 'Language',
+      'field.customInstructions': 'Extra instructions',
+      'field.requireToolConfirmation': 'Confirm before changing persona',
+      'field.trailEnabled': 'Light trail',
+      'field.trailColor': 'Trail color',
+      'field.trailSpeed': 'Trail speed',
+      'field.trailWidth': 'Trail width',
+      'field.workspaceOverridesEnabled': 'Per-project settings',
+      'field.workspaceFileDir': 'Workspace file location',
+      'field.presets': 'Presets',
+      'field.memory.enabled': 'Memory on/off',
+      'field.memory.autoCapture': 'Collect memories automatically',
+      'field.memory.nightlyTriage': 'Nightly cleanup',
+      'field.memory.nightlyHour': 'Cleanup time',
+      'field.memory.maxPending': 'Pending limit',
+      'field.memory.maxInjected': 'Memories per prompt',
+      'field.memory.maxInjectedChars': 'Memory character budget',
+      'field.memory.notifyOnSessionStart': 'Remind on new session',
+      'field.quality.enabled': 'Quality check on/off',
+      'field.quality.ledgerLevel': 'How much gets logged',
+      'field.quality.strict': 'Strict mode',
+      'field.quality.preStepCheck': 'Check before acting',
+      'field.quality.maxFindingsInReminder': 'Findings per reminder'
     }
 
     const FALLBACK_T = (key) => zh[key] ?? key
@@ -1378,6 +1806,108 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     const STATUS_TAG_KEY = { pending: 'mem.pendingTag', adopted: 'mem.adoptedTag', discarded: 'mem.discardedTag' }
+
+    /** 记忆类型 → 词典键。写错的类型回落 fact，与宿主 normalizeMemoryType 同一套默认。 */
+    const TYPE_TAG_KEY = {
+      fact: 'mem.typeFact',
+      preference: 'mem.typePreference',
+      stance: 'mem.typeStance',
+      event: 'mem.typeEvent'
+    }
+
+    /** 记忆状态 → 词典键。current 不画徽章：现行状态不需要标签，画出来只是噪音。 */
+    const STATE_TAG_KEY = {
+      superseded: 'mem.stateSuperseded',
+      contradicted: 'mem.stateContradicted',
+      dropped: 'mem.stateDropped'
+    }
+
+    /**
+     * 体检发现的种类 → 词典键。
+     *
+     * 用白名单查表而不是「拼 key 去试探」：词典缺 key 时 t() 要么抛错要么把 key
+     * 当文案显示出来，两条路都糟。未收录的种类走 kindOther，原文 detail 仍然照画 ——
+     * 宁可标签是「其它」，也不要把诊断信息吞掉。
+     */
+    const CHECKUP_KIND_KEY = {
+      'path-missing': 'checkup.kindPathMissing',
+      'path-prefix-missing': 'checkup.kindPathPrefixMissing',
+      'path-unprobed': 'checkup.kindPathUnprobed',
+      'verify-expired': 'checkup.kindVerifyExpired'
+    }
+
+    /** 类型下拉的选项顺序 —— 与宿主 MEMORY_TYPES 同集合，顺序按「最常见 → 最少见」。 */
+    const MEMORY_TYPE_VALUES = ['fact', 'preference', 'stance', 'event']
+
+    /** 状态下拉的选项顺序。current 排第一：绝大多数记忆都该是它。 */
+    const MEMORY_STATE_VALUES = ['current', 'superseded', 'contradicted', 'dropped']
+
+    /**
+     * 状态下拉单独的标签表。
+     *
+     * 不能复用 STATE_TAG_KEY：那张表故意不给 current 键（徽章不画它），
+     * 而下拉框必须能显示「现行」，否则用户打开表单会看到一个空选项。
+     */
+    const MEMORY_STATE_LABEL_KEY = {
+      current: 'mem.stateCurrent',
+      superseded: 'mem.stateSuperseded',
+      contradicted: 'mem.stateContradicted',
+      dropped: 'mem.stateDropped'
+    }
+
+    /**
+     * 改动记录里的字段名 → 人话。
+     *
+     * 这张表存在的理由很具体：改动记录原来直接显示 `diffConfig` 的原始键名
+     * （`agentName`、`memory.maxInjected`），屏幕上出现的是代码，不是「我改过什么」。
+     * 用户的原话是「UI 是面向人类的不是面向 ai 的」，这些键名就是最硬的证据。
+     *
+     * 键集合必须与 `lib/store.mjs` 的 `diffConfig` 保持一致。少一个的后果不是报错，
+     * 而是那一行退化成裸键名 —— 所以查不到时**回落到原键名**而不是显示「其它设置」：
+     * 露出难看的真相，好过把改动藏起来。
+     */
+    const AUDIT_FIELD_KEY = {
+      enabled: 'field.enabled',
+      agentName: 'field.agentName',
+      agentRole: 'field.agentRole',
+      addressUserAs: 'field.addressUserAs',
+      userOccupation: 'field.userOccupation',
+      userBio: 'field.userBio',
+      style: 'field.style',
+      headingLists: 'field.headingLists',
+      emoji: 'field.emoji',
+      tables: 'field.tables',
+      replyLength: 'field.replyLength',
+      language: 'field.language',
+      customInstructions: 'field.customInstructions',
+      requireToolConfirmation: 'field.requireToolConfirmation',
+      trailEnabled: 'field.trailEnabled',
+      trailColor: 'field.trailColor',
+      trailSpeed: 'field.trailSpeed',
+      trailWidth: 'field.trailWidth',
+      workspaceOverridesEnabled: 'field.workspaceOverridesEnabled',
+      workspaceFileDir: 'field.workspaceFileDir',
+      presets: 'field.presets',
+      'memory.enabled': 'field.memory.enabled',
+      'memory.autoCapture': 'field.memory.autoCapture',
+      'memory.nightlyTriage': 'field.memory.nightlyTriage',
+      'memory.nightlyHour': 'field.memory.nightlyHour',
+      'memory.maxPending': 'field.memory.maxPending',
+      'memory.maxInjected': 'field.memory.maxInjected',
+      'memory.maxInjectedChars': 'field.memory.maxInjectedChars',
+      'memory.notifyOnSessionStart': 'field.memory.notifyOnSessionStart',
+      'quality.enabled': 'field.quality.enabled',
+      'quality.ledgerLevel': 'field.quality.ledgerLevel',
+      'quality.strict': 'field.quality.strict',
+      'quality.preStepCheck': 'field.quality.preStepCheck',
+      'quality.maxFindingsInReminder': 'field.quality.maxFindingsInReminder'
+    }
+
+    /** 字段键 → 显示名。查不到就回落原键名（见上）。 */
+    function auditFieldLabel(t, key) {
+      const dictKey = AUDIT_FIELD_KEY[key]
+      return dictKey ? t(dictKey) : String(key ?? '')
+    }
 
     function shortTime(value) {
       if (!value) return ''
@@ -1399,34 +1929,65 @@ window.__ModuleLoader__.load({
 
     // ── 折叠状态持久化 ──────────────────────────────────────────────────
     //
-    // 只记「收起来了」的卡片 id（展开是默认态），存成一个小对象。设置页很长，
-    // 每次进来都要把同样的几张卡重新收一遍很烦；但「记不住」最多是烦，让整个
-    // 页面崩掉才是事故 —— 所以 localStorage 的读写全部吞掉异常（隐私模式、
-    // 存储配额、非浏览器环境都可能在这两行上抛）。
-    const COLLAPSED_KEY = 'dsh-anima:collapsed-cards'
+    // 只记「手动展开过」或「手动收起过」的卡片 id —— 现在默认态由卡片自己决定
+    // （要改的默认展开、只是查看的默认收起，见 DEFAULT_COLLAPSED），所以必须
+    // 记住**两个方向**，不能只记一个。
+    //
+    // 键名从 dsh-anima:collapsed-cards 换成 dsh-anima:card-state：语义反了
+    // （旧键记「收起的」，在新规则下「收起的」反而是默认态），沿用旧键会让
+    // 以前手展开过的卡在新版本里永久收起、点一下才对、下次又错。
+    const CARD_STATE_KEY = 'dsh-anima:card-state'
 
-    function readCollapsedCards() {
+    function readCardState() {
       try {
-        const raw = globalThis.localStorage?.getItem(COLLAPSED_KEY)
+        const raw = globalThis.localStorage?.getItem(CARD_STATE_KEY)
         if (!raw) return {}
         const parsed = JSON.parse(raw)
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
         const out = {}
-        // 只认 true：存进去的脏值（0、"yes"、嵌套对象）一律按「没收起」处理，
-        // 否则一次手改 localStorage 就能让某张卡永远打不开。
-        for (const [key, value] of Object.entries(parsed)) if (value === true) out[key] = true
+        // 只认布尔：存进去的脏值（0、"yes"、嵌套对象）一律丢弃，回落到卡片的
+        // 默认态，否则一次手改 localStorage 就能让某张卡永远打不开。
+        for (const [key, value] of Object.entries(parsed)) {
+          if (value === true || value === false) out[key] = value
+        }
         return out
       } catch {
         return {}
       }
     }
 
-    function writeCollapsedCards(value) {
+    function writeCardState(value) {
       try {
-        globalThis.localStorage?.setItem(COLLAPSED_KEY, JSON.stringify(value))
+        globalThis.localStorage?.setItem(CARD_STATE_KEY, JSON.stringify(value))
       } catch {
-        // 存不下就算了：下次打开会全部展开，不影响任何设置本身。
+        // 存不下就算了：下次打开会回到默认态，不影响任何设置本身。
       }
+    }
+
+    /** 读上次停在的分区。任何异常/脏值都退回第一栏 —— 打不开设置页比记不住更糟。 */
+    function readActiveSection() {
+      try {
+        const raw = globalThis.localStorage?.getItem(ACTIVE_SECTION_KEY)
+        if (!raw) return SECTION_IDS[0]
+        // 存的是裸字符串而不是 JSON：只有一个小写标识符，没必要为它解析一次。
+        return SECTION_IDS.includes(raw) ? raw : SECTION_IDS[0]
+      } catch {
+        return SECTION_IDS[0]
+      }
+    }
+
+    function writeActiveSection(id) {
+      try {
+        globalThis.localStorage?.setItem(ACTIVE_SECTION_KEY, id)
+      } catch {
+        // 存不下就每次回到第一栏，不影响任何设置本身。
+      }
+    }
+
+    /** 某张卡片属于哪一栏。找不到时回 null —— 新加的卡片忘了登记也不该整页崩。 */
+    function sectionOfCard(cardId) {
+      for (const section of SECTIONS) if (section.cards.includes(cardId)) return section.id
+      return null
     }
 
     function reasonText(t, reason) {
@@ -1446,6 +2007,30 @@ window.__ModuleLoader__.load({
 
     function Hint(props) {
       return e('div', { className: 'an-hintline' }, props.children)
+    }
+
+    /**
+     * 分区导航。一排横向标签，只切换「显示哪一栏」，不改任何设置值。
+     *
+     * 刻意不用下拉框：分区只有五栏，横排一眼能看全，也能直接看出「原来还有
+     * 别的页」，而下拉把这件事藏进一次点击之后。
+     */
+    function SectionNav(props) {
+      const t = typeof props.t === 'function' ? props.t : FALLBACK_T
+      return e('div', { className: 'an-sectnav', role: 'tablist' },
+        SECTIONS.map((section) =>
+          e('button', {
+            key: section.id,
+            type: 'button',
+            role: 'tab',
+            className: `an-sectnav-tab${props.active === section.id ? ' an-sectnav-tab-on' : ''}`,
+            'aria-selected': props.active === section.id ? 'true' : 'false',
+            onClick: () => {
+              if (typeof props.onSelect === 'function') props.onSelect(section.id)
+            }
+          }, t(`section.${section.id}`))
+        )
+      )
     }
 
     function ErrorBox(props) {
@@ -1477,7 +2062,17 @@ window.__ModuleLoader__.load({
       const id = typeof props.id === 'string' && props.id ? props.id : ''
       const collapsed = props.collapsed === true
       const t = typeof props.t === 'function' ? props.t : FALLBACK_T
-      return e('section', { className: `an-card${collapsed ? ' an-card-collapsed' : ''}` },
+      // 不在当前分区里的卡片用 display:none 藏起来，而不是不渲染。
+      //
+      // 两种「藏」的差别在这里是要紧的：不渲染会把这张卡里的未保存表单值、
+      // 折叠态、展开的预览一起丢掉，用户切个分区回来发现刚敲的字没了。
+      // 用 CSS 藏则整棵子树还在，只是看不见 —— 代价是首屏 DOM 不变小。
+      const hidden = props.hidden === true
+      return e('section', {
+        className: `an-card${collapsed ? ' an-card-collapsed' : ''}`,
+        'data-an-card': id || undefined,
+        style: hidden ? { display: 'none' } : undefined
+      },
         e('div', { className: 'an-card-head' },
           e('div', { style: { minWidth: 0 } },
             e('h3', { className: 'an-card-title' }, props.title),
@@ -1496,6 +2091,22 @@ window.__ModuleLoader__.load({
         ),
         collapsed ? null : props.children
       )
+    }
+
+    // 哪些卡默认收起：判据是「你是来改东西的，还是来查东西的」。
+    //
+    // 用户原话：「每个正常人类打开这个设置肯定是想改这个设置相关的东西，
+    // 比如人设就改人设」。所以人设/预设/表现三栏全展开；记忆栏里「待审」
+    // 和「手动添加」要展开（那是要动手的），「已采纳」只是一份清单，收起；
+    // 高级栏的工作区是要动配置的，展开；预览是查看结果，收起。
+    // 变更记录不在 Card 体系里，它常驻在页面顶部，永远可见。
+    const DEFAULT_COLLAPSED = { mem: false, preview: true }
+
+    // 卡片此刻该不该收起：用户手动改过就听用户的，没改过就看默认表。
+    // 默认表里没有的卡片一律展开 —— 新加的卡默认看得见，比默认藏起来安全。
+    function cardCollapsed(id, overrides) {
+      if (overrides && typeof overrides[id] === 'boolean') return overrides[id]
+      return DEFAULT_COLLAPSED[id] === true
     }
 
     // ── 光轨实现 ────────────────────────────────────────────────────────
@@ -1842,13 +2453,106 @@ window.__ModuleLoader__.load({
       if (record.scope) meta.push(`作用域：${record.scope}`)
       if (record.note) meta.push(`备注：${record.note}`)
 
+      // 分类 / 状态 / 复核点 / 出处。
+      //
+      // 这四项以前只在 JSON 里能看到，等于「记了但你看不见」：一条记忆属于
+      // 事实还是偏好，决定它该不该按同一速度衰减；复核点过期意味着它可能已经
+      // 不成立；出处决定它能不能被核对。看不见这三样，用户就只能选择相信整份记忆库。
+      const badges = []
+      const typeKey = TYPE_TAG_KEY[record.type]
+      if (typeKey) badges.push(e('span', { className: 'an-badge' }, t(typeKey)))
+      const stateKey = STATE_TAG_KEY[record.state]
+      if (stateKey) {
+        // 「曾如此 / 有争议」与「已采纳」在语义上是冲突的两件事（一个是历史，一个是身份），
+        // 所以状态徽章加一圈提示，别让人以为它还现行。
+        badges.push(e('span', { className: 'an-badge', title: t('mem.stateHint') }, t(stateKey)))
+      }
+
+      const extra = []
+      if (record.verifyAt) {
+        // 过期与否由日期算，不由我判断 —— 日历说的和「还算不算数」是两件事，
+        // 这里只报日历，不替用户裁「这点已经作废」。
+        const overdue = String(record.verifyAt) < new Date().toISOString().slice(0, 10)
+        extra.push(`${t('mem.verifyAt')}：${record.verifyAt}${overdue ? `（${t('mem.verifyOverdue')}）` : ''}`)
+      }
+      if (record.sourceRef) extra.push(`${t('mem.sourceRef')}：${record.sourceRef}`)
+
+      // 元数据编辑表单。只在「正在编辑这一条」时出现 —— 常驻会让每一条记忆
+      // 都变成一个四行表单，扫一遍库变成苦差事。
+      const editing = props.metaEditing === true
+      const draft = props.metaDraft ?? {}
+      const form = editing
+        ? e('div', { className: 'an-field', style: { marginTop: 10 } },
+            e('label', null, t('mem.type')),
+            e('select', {
+              className: 'an-select',
+              value: draft.type ?? 'fact',
+              onChange: (event) => props.onChangeMeta('type', event.target.value)
+            },
+              MEMORY_TYPE_VALUES.map((value) =>
+                e('option', { key: value, value }, t(TYPE_TAG_KEY[value]))
+              )
+            ),
+            e(Hint, null, t('mem.metaTypeHint')),
+
+            e('label', null, t('mem.stateCurrent')),
+            e('select', {
+              className: 'an-select',
+              value: draft.state ?? 'current',
+              onChange: (event) => props.onChangeMeta('state', event.target.value)
+            },
+              MEMORY_STATE_VALUES.map((value) =>
+                e('option', { key: value, value }, t(MEMORY_STATE_LABEL_KEY[value]))
+              )
+            ),
+            e(Hint, null, t('mem.metaStateHint')),
+
+            e('label', null, t('mem.verifyAt')),
+            e('input', {
+              className: 'an-input',
+              type: 'date',
+              value: draft.verifyAt ?? '',
+              onChange: (event) => props.onChangeMeta('verifyAt', event.target.value)
+            }),
+            e(Hint, null, t('mem.metaVerifyHint')),
+
+            e('label', null, t('mem.sourceRef')),
+            e('input', {
+              className: 'an-input',
+              type: 'text',
+              value: draft.sourceRef ?? '',
+              maxLength: 200,
+              onChange: (event) => props.onChangeMeta('sourceRef', event.target.value)
+            }),
+            e(Hint, null, t('mem.metaSourceHint')),
+
+            e('div', { className: 'an-actions' },
+              e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm an-btn-primary',
+                disabled: busy,
+                onClick: () => props.onSaveMeta(record.id)
+              }, t('mem.saveMeta')),
+              e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm',
+                disabled: busy,
+                onClick: props.onCancelMeta
+              }, t('common.cancel'))
+            )
+          )
+        : null
+
       return e('div', { className: 'an-item' },
         e('div', { className: 'an-item-main' },
           e('div', { className: 'an-item-text' }, record.text),
           e('div', { className: 'an-item-meta' },
             e('span', { className: 'an-badge' }, t(STATUS_TAG_KEY[record.status] ?? 'mem.pendingTag')),
+            badges,
             meta.map((text, index) => e('span', { key: index }, text))
-          )
+          ),
+          extra.length > 0 ? e('div', { className: 'an-item-meta' }, extra.map((text, index) => e('span', { key: index }, text))) : null,
+          form
         ),
         e('div', { className: 'an-item-actions' },
           props.status === 'pending'
@@ -1866,6 +2570,15 @@ window.__ModuleLoader__.load({
                 disabled: busy,
                 onClick: () => props.onDecide(record.id, 'discard')
               }, t('mem.discard'))
+            : null,
+          // 元数据只对已采纳的条目开：待审的还没决定要不要，先改分类是本末倒置。
+          props.status === 'adopted'
+            ? e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm',
+                disabled: busy,
+                onClick: editing ? props.onCancelMeta : () => props.onStartMeta(record)
+              }, editing ? t('mem.editMetaHide') : t('mem.editMeta'))
             : null,
           e('button', {
             type: 'button',
@@ -1909,6 +2622,31 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 字节不画成「用了 / 上限」：字符预算没有对应的字节上限，硬凑一个分母
+      // （比如 maxChars * 3）就是编一个数字让人误会。只报实际占用。
+      const usedBytes = budget?.maxChars > 0 ? (budget.usedBytes ?? 0) : 0
+
+      // 卡在哪个闸：只有真的卡住了才显示。没卡时显示「没卡」等于
+      // 在常驻界面上挂一句永远成立的话，看久了就没人再读它。
+      const limitKey = {
+        count: 'inj.limitedByCount',
+        chars: 'inj.limitedByChars'
+      }[budget?.limitedBy]
+
+      // 因预算没带上的条数：与宿主 summarizeOmission 同源口径，
+      // 客户端不自己再定一套「哪些算预算原因」，否则两处迟早对不上。
+      const omitted = excluded.filter((d) => d.reason === 'over-max'
+        || d.reason === 'over-budget'
+        || d.reason === 'dropped-by-budget').length
+
+      // 已超窗的条数：只在大于 0 时出现。
+      // 理由与上面「字符预算为 0 不画进度条」相同 —— 现在 21 条全是 7 天龄、
+      // 全部 fresh，常显会长期挂着一个 0；而一个长期不动的数字会让人不再看它，
+      // 真跳到 3 条那天也不会被注意到。
+      // 只计数、不解释「为什么超窗」：那是 lib/decay.mjs 按日历算的，
+      // 客户端不重新实现一遍判据，免得两边哪天算出不同的数。
+      const decayedCount = included.filter((d) => d.decayed === true).length
+
       return e('div', { className: 'an-field', style: { marginTop: 16 } },
         e('div', { className: 'an-row-between' },
           e('div', { className: 'an-card-title' }, t('inj.title')),
@@ -1932,6 +2670,30 @@ window.__ModuleLoader__.load({
                 e('dt', { key: `${labelKey}-k` }, t(labelKey)),
                 e('dd', { key: `${labelKey}-v` }, `${used} / ${max}`)
               ]).flat()
+            )
+          : null,
+
+        decayedCount > 0
+          ? e('div', { className: 'an-kv', style: { marginTop: 10 } },
+              e('dt', null, t('inj.decayed')),
+              e('dd', null, String(decayedCount))
+            )
+          : null,
+
+        // 字节与「卡在哪个闸」：两个都是补上原来只显示字符数造成的误读。
+        // 「4000 字」看着很宽裕，中文实际能到 12000 字节；而「只带了 3 条」
+        // 到底该删条目还是调预算，取决于卡在哪一闸。
+        usedBytes > 0 || limitKey || omitted > 0
+          ? e('div', { className: 'an-kv', style: { marginTop: 10 } },
+              usedBytes > 0
+                ? [e('dt', { key: 'bytes-k' }, t('inj.bytes')), e('dd', { key: 'bytes-v' }, String(usedBytes))]
+                : [],
+              limitKey
+                ? [e('dt', { key: 'lim-k' }, t('inj.limitedBy')), e('dd', { key: 'lim-v' }, t(limitKey))]
+                : [],
+              omitted > 0
+                ? [e('dt', { key: 'omit-k' }, t('inj.omitted')), e('dd', { key: 'omit-v' }, String(omitted))]
+                : []
             )
           : null,
 
@@ -1967,6 +2729,174 @@ window.__ModuleLoader__.load({
      * 聚类与冲突提示。只提示，不自动合并 —— 合并等于替用户写一段他没说过的话，
      * 而本插件的立场是「判断什么值得记交给模型，什么真的生效交给用户」。
      */
+    /**
+     * 巡夜记录那一行。
+     *
+     * 用户定的规则（m05776）是「有需要汇报的就汇报，没有就不汇报」。这条规则
+     * 有一个必须当场堵住的洞：只报有事之后，「沉默」同时代表两件事 ——
+     *   (a) 巡过了，没事
+     *   (b) 巡夜那个东西根本没跑 / 坏了
+     * 所以**汇报可以不发，记录必须留**。这一行的职责就是把 (a) 和 (b) 分开：
+     * 有记录 = 跑过，reported=false = 那次判定为无事；没有这一行 = 从没跑过。
+     *
+     * 三种态视觉可分：
+     *   meta 为空 → 明确说「还没跑过」，不许画成「没事」
+     *   reported=false → 说「跑过了，判为无事」，并列出它当时看的是什么
+     *   reported=true → 说「跑过了，报过」，带时间
+     */
+    function PatrolLine(props) {
+      const t = props.t
+      const meta = props.meta
+      const running = props.running === true
+
+      if (!meta) {
+        return e('div', { className: 'an-hintline' }, t('patrol.never'))
+      }
+
+      const facts = meta.facts ?? {}
+      const bits = [
+        `${t('patrol.pending')} ${Number(facts.pending) || 0}`,
+        `${t('patrol.flagged')} ${Number(facts.flagged) || 0}`,
+        `${t('patrol.removed')} ${Number(facts.removed) || 0}`
+      ]
+      const verdict = meta.reported === true ? t('patrol.reported') : t('patrol.silent')
+
+      // 明细（2026-10-25 加）：`体检问题 3` 只说得出「有几条」，说不出「哪几条」。
+      // 汇报消息里点过名，但那是会话历史，翻不到就没了。这里把当晚点到的
+      // 那几条直接铺在记录下面 —— 用户想问「是哪条」时不必再跑一次体检。
+      const items = Array.isArray(meta.flaggedItems) ? meta.flaggedItems : []
+      const dropped = Number(meta.flaggedDropped) || 0
+
+      return e('div', null,
+        e('div', { className: 'an-hintline' },
+          e('span', { className: 'an-badge' }, `${t('patrol.last')} ${shortTime(meta.at)}`),
+          ' ',
+          e('span', null, `${verdict}${running ? `（${t('patrol.running')}）` : ''}`),
+          ' ',
+          e('span', null, bits.join('｜'))
+        ),
+        items.length === 0
+          ? null
+          : e('div', { style: { marginTop: 4 } },
+              e('div', { className: 'an-note' }, t('patrol.details')),
+              e('div', { className: 'an-list', style: { marginTop: 4 } },
+                items.map((item) => e('div', { key: item.id, className: 'an-item' },
+                  e('div', { className: 'an-item-main' },
+                    e('div', { className: 'an-item-text' }, item.detail || item.id),
+                    e('div', { className: 'an-item-meta' },
+                      // 证据是「凭什么说它有问题」的唯一凭据。当初没记（旧记录没有这一栏）
+                      // 就如实说没记，不能画一个空徽章冒充「无可奉告」。
+                      e('span', null, item.evidence || t('patrol.detailNoEvidence')),
+                      ' ',
+                      e('span', { className: 'an-badge' }, `/anima mark ${item.id} state=contradicted`)
+                    )
+                  )
+                ))
+              ),
+              dropped > 0
+                ? e('div', { className: 'an-hintline' }, t('patrol.moreDropped').replace('{n}', String(dropped)))
+                : null
+            )
+      )
+    }
+
+    /**
+     * 记忆体检面板。
+     *
+     * 它只报「机器能验的两件事」：路径还在不在、复核点过没过。刻意不显示任何
+     * 「这条可能过时了」的语义判断 —— 那等于替用户下结论，而记忆库里一旦出现
+     * 用户没说过的话，整个记忆就不可信了。
+     *
+     * 三种态必须视觉可分：没查过（什么都不画）、查了没事（画结论 + 那句免责）、
+     * 查出问题（逐条列出证据与可复制的命令）。把「没查」画成「没事」是这个项目
+     * 一直在防的那件事。
+     */
+    function CheckupPanel(props) {
+      const t = props.t
+      const result = props.result
+      const busy = props.busy === true
+      const onRun = props.onRun
+      const onApply = props.onApply
+      const applyBusy = props.applyBusy
+
+      const flagged = Array.isArray(result?.flagged) ? result.flagged : []
+      const checked = result?.checked
+      const running = result?.running === true || busy
+
+      return e('div', { style: { marginTop: 16 } },
+        e('div', { className: 'an-row-between' },
+          e('div', { className: 'an-card-title' }, t('checkup.run')),
+          e('button', {
+            type: 'button',
+            className: 'an-btn an-btn-sm',
+            disabled: running,
+            onClick: onRun
+          }, running ? t('checkup.running') : t('checkup.run'))
+        ),
+        e(Hint, null, t('checkup.note')),
+
+        // 没查过 vs 查了没事：前者一个字都不说。
+        result === null
+          ? null
+          : e('div', { style: { marginTop: 10 } },
+              e('div', { className: 'an-note' },
+                t('checkup.summary').replace('{checked}', String(checked ?? 0)).replace('{flagged}', String(flagged.length))
+              ),
+              flagged.length === 0
+                ? e('div', { className: 'an-note' }, t('checkup.clean'))
+                : null,
+              flagged.length > 0
+                ? e('div', { className: 'an-list', style: { marginTop: 8 } },
+                    flagged.map((finding) => {
+                      const suggestion = finding.suggestion ?? null
+                      const canApply = Boolean(suggestion && suggestion.state)
+                      return e('div', { key: finding.id, className: 'an-item' },
+                        e('div', { className: 'an-item-main' },
+                          e('div', { className: 'an-item-text' }, finding.text),
+                          e('div', { className: 'an-item-meta' },
+                            (finding.findings ?? []).map((f, index) =>
+                              e('span', { key: index, className: 'an-badge' },
+                                `${t(CHECKUP_KIND_KEY[f.kind] ?? 'checkup.kindOther')}｜${f.detail}`
+                              )
+                            )
+                          ),
+                          // 证据单独一行：这是「凭什么说它有问题」的唯一凭据，
+                          // 混在徽章里会被当成标签，而它其实是可复查的断言。
+                          e('div', { className: 'an-item-meta' },
+                            (finding.findings ?? []).map((f, index) =>
+                              e('span', { key: `e-${index}` }, f.evidence)
+                            )
+                          ),
+                          e('div', { className: 'an-item-meta' },
+                            e('span', null, `${t('checkup.suggest')}：${suggestion?.state ? suggestion.state : t('checkup.suggestNone')}`)
+                          ),
+                          suggestion?.command
+                            ? e('div', { className: 'an-item-meta' },
+                                e('span', null, `${t('checkup.command')}：${suggestion.command}`)
+                              )
+                            : null
+                        ),
+                        e('div', { className: 'an-item-actions' },
+                          canApply
+                            ? e('button', {
+                                type: 'button',
+                                className: 'an-btn an-btn-sm',
+                                disabled: applyBusy === true,
+                                onClick: () => onApply(finding)
+                              }, t('checkup.apply'))
+                            : null
+                        )
+                      )
+                    })
+                  )
+                : null,
+              // 结果是快照，不是实时状态。不加这句，用户会拿十分钟前的结论
+              // 去判断刚改过的记忆。
+              e('div', { className: 'an-hintline' }, t('checkup.stale'))
+            )
+      )
+    }
+
     function ClusterNotes(props) {
       const t = props.t
       const clusters = Array.isArray(props.clusters) ? props.clusters : []
@@ -2288,13 +3218,21 @@ window.__ModuleLoader__.load({
      *   ① 「原值 → 新值」用并排的两小段，而不是一行字符串拼接 —— 人设字段里
      *      有中文长句（自定义指令、角色描述），拼一行会读不出来；
      *   ② 值恰好相等（presets 这类只记规模的摘要）时只显示一次，不去编造差异。
+     *
+     * 为什么这里不再有 compact（截断）分支：以前收起态会常驻 3 条预览，
+     * 所以需要把 1435 字的长值截成 28 字。现在收起态一行明细都不画，
+     * 能看到明细的时候一定是用户主动展开的 —— 那时候他要的就是全文。
+     * 留着 compact 只会变成一段永远走不到的代码。
      */
     function AuditItem(props) {
       const t = props.t
       const entry = props.entry
       const sourceText = props.sourceText ?? {}
       const actors = { user: t('audit.actor.user'), agent: t('audit.actor.agent'), system: t('audit.actor.system') }
-      const show = (value) => (value === null || value === '' || value === undefined ? t('audit.emptyValue') : String(value))
+      const show = (value) => {
+        if (value === null || value === '' || value === undefined) return t('audit.emptyValue')
+        return String(value)
+      }
       const changes = Array.isArray(entry.changes) ? entry.changes : []
       const sourceLabel = sourceText[entry.source] ?? entry.source ?? ''
 
@@ -2309,7 +3247,7 @@ window.__ModuleLoader__.load({
           ),
           e('div', { className: 'an-audit-changes' },
             changes.map((change, index) => e('div', { key: `${change.key}-${index}`, className: 'an-audit-change' },
-              e('span', { className: 'an-audit-key' }, change.key),
+              e('span', { className: 'an-audit-key' }, auditFieldLabel(t, change.key)),
               change.from === change.to
                 // 摘要值可能相等（[1 项] → [1 项]）：这时编造「从 A 改成 B」是撒谎
                 ? e('span', { className: 'an-audit-arrow' }, show(change.to))
@@ -2325,23 +3263,34 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 设置页「变更记录」卡片。
+     * 「最近改了什么」—— 设置页顶部的一个**下拉条**，不是常驻卡片。
      *
-     * 数据先由 /state 随包下发尾部若干条（省一次可能挂起的往返），
-     * 展开时再打 /audit 取全量。
+     * 演进史（三次都记在这里，省得下一个人又改回去）：
+     *   ① 最早它是「高级」栏里的一张卡，默认收起、还要再点一次「展开明细」——
+     *      用户原话「我根本不知道改成啥了」，等于没有。
+     *   ② 后来搬到顶部常驻、默认露最近 3 条。看得见了，但**太大**：每行都带
+     *      「原值 → 新值」，一屏吃掉三分之一，用户这次的原话是「太大了占位置不好看」。
+     *   ③ 现在折中成下拉：收起态只占**一行**（标题 + 条数 + 箭头），点一下才铺开。
+     *      信息还在同一个位置，但不再抢版面。
+     *
+     * 数据仍分两级：收起态用 /state 随包下发的计数，**不发请求**；
+     * 展开才打 /audit 取全量 —— 首屏不该为一份日志等。
      */
-    function AuditCard(props) {
+    function RecentChanges(props) {
       const t = props.t
       const state = props.state
       const controller = props.controller
       const setToast = props.setToast
-      const open = state.showAudit === true
+      const expanded = state.showAudit === true
       const audit = state.audit ?? { entries: [], total: 0, max: 200, sourceText: {} }
       const entries = Array.isArray(audit.entries) ? audit.entries : []
+      // 新的在上：读日志的人先关心「刚刚发生了什么」
+      const ordered = entries.slice().reverse()
+      const shown = expanded ? ordered : []
 
       const toggle = async () => {
         controller.store.update((s) => { s.showAudit = !s.showAudit })
-        if (!open) await controller.loadAudit()
+        if (!expanded) await controller.loadAudit()
       }
 
       const clear = async () => {
@@ -2354,39 +3303,44 @@ window.__ModuleLoader__.load({
         setToast({ kind: 'ok', text: t('audit.cleared') })
       }
 
-      return e(Card, {
-        id: 'audit',
-        t,
-        collapsed: props.collapsed === true,
-        onToggle: props.onToggle,
-        title: t('audit.title'),
-        desc: t('audit.desc'),
-        aside: e('div', { className: 'an-actions' },
-          e('span', { className: 'an-badge' }, `${t('audit.total')} ${audit.total ?? 0} ${t('audit.records')}`.trim()),
-          e('button', {
-            type: 'button',
-            className: 'an-btn an-btn-sm',
-            onClick: toggle
-          }, open ? t('audit.hide') : t('audit.toggle'))
-        )
+      const total = audit.total ?? 0
+
+      return e('section', {
+        className: 'an-recent',
+        // 展开态放 data 属性而不是往 className 里再拼一个词：
+        // 树遍历式断言（byClass）按 className 精确匹配，多一个词就让整块失联。
+        'data-an-recent': expanded ? 'open' : 'closed'
       },
-        open
-          ? e('div', null,
+        // 整行就是那个开关。不再套一个内层按钮：按钮里嵌按钮在 DOM 里是非法结构，
+        // 而且下拉的惯例本来就是「整行可点」。
+        e('button', {
+          type: 'button',
+          className: 'an-recent-toggle',
+          'aria-expanded': expanded ? 'true' : 'false',
+          title: expanded ? t('audit.hide') : t('audit.toggle'),
+          onClick: toggle
+        },
+          e('span', { className: 'an-recent-caret' }, '▶'),
+          e('span', { className: 'an-recent-title' }, t('audit.title')),
+          // 条数是这一行里唯一必须常驻的数字：它回答「值不值得点开」
+          e('span', { className: 'an-badge' }, `${t('audit.total')} ${total} ${t('audit.records')}`.trim())
+        ),
+        expanded
+          ? e('div', { className: 'an-recent-body' },
               state.auditError ? e(ErrorBox, { error: state.auditError }) : null,
-              state.auditLoading && entries.length === 0
-                ? e('div', { className: 'an-empty' }, t('audit.loading'))
-                : (entries.length === 0
-                    ? e('div', { className: 'an-empty' }, t('audit.empty'))
-                    : e('div', { className: 'an-list' },
-                        // 新的在上：读日志的人先关心「刚刚发生了什么」
-                        entries.slice().reverse().map((entry) => e(AuditItem, {
-                          key: entry.id,
-                          t,
-                          entry,
-                          sourceText: audit.sourceText
-                        }))
-                      )),
-              e('div', { className: 'an-actions', style: { marginTop: 12 } },
+              shown.length === 0
+                ? e('div', { className: 'an-empty' },
+                    state.auditLoading && entries.length === 0 ? t('audit.loading') : t('audit.empty'))
+                : e('div', { className: 'an-list' },
+                    shown.map((entry) => e(AuditItem, {
+                      key: entry.id,
+                      t,
+                      entry,
+                      sourceText: audit.sourceText,
+                      compact: false
+                    }))
+                  ),
+              e('div', { className: 'an-actions', style: { marginTop: 10 } },
                 e('button', {
                   type: 'button',
                   className: 'an-btn an-btn-sm an-btn-danger',
@@ -2394,6 +3348,7 @@ window.__ModuleLoader__.load({
                   onClick: clear
                 }, t('audit.clear'))
               ),
+              // 「只保留最近 200 条」属于说明，只在真正展开看全量时才提一句。
               e(Hint, null, t('audit.maxHint'))
             )
           : null
@@ -2414,7 +3369,15 @@ window.__ModuleLoader__.load({
           status: props.status,
           busy: props.busy,
           onDecide: props.onDecide,
-          onDelete: props.onDelete
+          onDelete: props.onDelete,
+          // 元数据编辑：只有「已采纳」那一个列表会传这几项。待审与已丢弃传进来
+          // 也不会画出按钮（MemoryItem 里按 status 判），多传一层没有副作用。
+          metaEditing: props.metaEditingId === record.id,
+          metaDraft: props.metaEditingId === record.id ? props.metaDraft : null,
+          onStartMeta: props.onStartMeta,
+          onCancelMeta: props.onCancelMeta,
+          onChangeMeta: props.onChangeMeta,
+          onSaveMeta: props.onSaveMeta
         }))
       )
     }
@@ -2545,17 +3508,28 @@ window.__ModuleLoader__.load({
       const config = state.config
       const limits = state.limits ?? { agentName: 50, agentRole: 800, addressUserAs: 50 }
 
-      const [local, setLocal] = React.useState(() => ({
-        enabled: true,
-        ...personaDefaults(),
-        workspaceOverridesEnabled: true,
-        workspaceFileDir: '.dsh-anima',
-        memory: memoryDefaults(null),
-        ...toolDefaults(null)
-      }))
+      /**
+       * 宿主配置 → 本地表单。初始渲染与 config 变化后的同步**必须共用同一份**，
+       * 否则两边会慢慢长歪（一边漏一个字段，脏检查就会永远说「有未保存的修改」）。
+       *
+       * 初始渲染就要用它，而不是先摆一份空默认值等 useEffect 来填：useState 的
+       * 惰性初始化在首次渲染时就执行，useEffect 要等首帧**绘制之后**才跑。中间
+       * 那一帧 config 已有值、local 还是空默认值 ⇒ dirty 为真 ⇒ 用户每次打开
+       * 设置页都会先看到一眼「有未保存的修改」和亮起的保存按钮，然后才消失。
+       */
+      const localFromConfig = (source) => ({
+        enabled: source?.enabled !== false,
+        ...pickPersona(source),
+        workspaceOverridesEnabled: source?.workspaceOverridesEnabled !== false,
+        workspaceFileDir: source?.workspaceFileDir ?? '.dsh-anima',
+        memory: memoryDefaults(source ?? null),
+        quality: qualityDefaults(source ?? null),
+        ...toolDefaults(source ?? null)
+      })
+
+      const [local, setLocal] = React.useState(() => localFromConfig(config))
       const [wsLocal, setWsLocal] = React.useState(() => personaDefaults())
       const [newMemory, setNewMemory] = React.useState({ text: '', note: '', scope: '' })
-      const [showPreview, setShowPreview] = React.useState(false)
       const [presetPick, setPresetPick] = React.useState('')
 
       // 下面两个派生值必须排在各 useState 之后：它们读 presetPick，
@@ -2572,11 +3546,34 @@ window.__ModuleLoader__.load({
       // 哪些卡片被收起来了。初始值只读一次（useState 的惰性初始化），
       // 之后由 toggleCard 同时改内存与落盘 —— 若每次渲染都重新读 localStorage，
       // 页面上其它地方触发的重渲染会把用户刚展开的卡片又收回去。
-      const [collapsed, setCollapsed] = React.useState(() => readCollapsedCards())
+      const [cardStateMap, setCardStateMap] = React.useState(() => readCardState())
+      // 当前看的是哪一栏。与折叠态一样只在初始化时读一次本地存储，
+      // 之后由 setActiveSection 同时改内存与落盘。
+      const [activeSection, setActiveSectionState] = React.useState(() => readActiveSection())
+      // 预览卡是否展开：直接读卡片折叠态，不再单独存一份。
+      // 原来这里有一个独立的 showPreview 开关，叠在卡片折叠之上 —— 二层门，
+      // 而且两层的默认态互不相干（卡默认展开、开关默认关），用户点开卡
+      // 看到的是一片空，还以为坏了。
+      //
+      // 必须放在 cardStateMap 之后：const 声明的 useState 结果在声明前落在
+      // 暂时性死区里，提前读会抛「Cannot access 'cardStateMap' before
+      // initialization」—— 这条注释是踩过一次之后写的。
+      const previewOpen = !cardCollapsed('preview', cardStateMap)
       // 导入面板（Phase ②）那一小块的全部状态。刻意提到这一层：ImportPanel 必须
       // 保持无状态（理由见那边的注释），而它内部的交互又比卡片折叠复杂得多 ——
       // 收在这里比在组件内部再摆一排 useState 更贵，但换来的是渲染树可被遍历式调用。
       const [memoryImport, setMemoryImport] = React.useState({})
+      // 记忆体检结果。null = 还没查过（此时不画任何结论 —— 「没查」和「查了没事」
+      // 必须长得不一样，这是整个项目的立场）。带一个 savedAt，用来在结果旁边
+      // 提醒「这是刚才的结果，记忆可能已经变了」。
+      const [checkup, setCheckup] = React.useState(null)
+      // 巡夜正在跑。单独一个状态而不是复用 checkup.running：巡夜包含整理 + 体检
+      // 两步，用体检的运行态画它会让「正在体检」和「正在巡夜」混在一起。
+      const [patrolRunning, setPatrolRunning] = React.useState(false)
+      // 正在编辑元数据的那条记忆的 id，以及编辑中的草稿。草稿与 record 分开存，
+      // 因为取消编辑要能原样丢弃，不该写回 state 快照。
+      const [metaEditing, setMetaEditing] = React.useState(null)
+      const [metaDraft, setMetaDraft] = React.useState({})
 
       const setImportState = (patch) => {
         setMemoryImport((prev) => ({ ...prev, ...patch }))
@@ -2591,30 +3588,36 @@ window.__ModuleLoader__.load({
 
       const toggleCard = (id) => {
         if (!id) return
-        setCollapsed((prev) => {
+        setCardStateMap((prev) => {
           const next = { ...prev }
-          if (next[id] === true) delete next[id]
-          else next[id] = true
-          writeCollapsedCards(next)
+          // 记的是「翻转后」的态：先按当前规则算出现在是什么，再取反写死。
+          // 直接 delete 等于「回到默认」，只有默认态恰好相反时才表现为翻转，
+          // 而用户点按钮的意图永远是「翻一下」，不管默认是什么。
+          next[id] = !cardCollapsed(id, prev)
+          writeCardState(next)
           return next
         })
       }
 
       // 每张卡的折叠接线都从这一处来：新增卡片时只要写 id，
       // 不必记得同时传 collapsed 与 onToggle（漏一个就是「按钮点了没反应」）。
-      const cardState = (id) => ({ collapsed: collapsed[id] === true, onToggle: toggleCard })
+      const cardState = (id) => ({ collapsed: cardCollapsed(id, cardStateMap), onToggle: toggleCard })
+
+      const selectSection = (id) => {
+        if (!SECTION_IDS.includes(id)) return
+        writeActiveSection(id)
+        setActiveSectionState(id)
+      }
+
+      // 卡片的三态接线：折叠态 + 「此刻是不是在这一栏」。
+      // 与 cardState 分开命名而不是加参数，是因为所有调用点都写 `...cardState(id)`，
+      // 加参数会静默漏掉后面新增的卡片（漏了就是「点进去什么也没有」）。
+      const cardSlot = (id) => ({ ...cardState(id), hidden: sectionOfCard(id) !== activeSection })
 
       // 服务端状态 → 本地表单
       React.useEffect(() => {
         if (!config) return
-        setLocal({
-          enabled: config.enabled !== false,
-          ...pickPersona(config),
-          workspaceOverridesEnabled: config.workspaceOverridesEnabled !== false,
-          workspaceFileDir: config.workspaceFileDir ?? '.dsh-anima',
-          memory: memoryDefaults(config),
-          ...toolDefaults(config)
-        })
+        setLocal(localFromConfig(config))
       }, [config])
 
       // 工作区覆盖 → 本地表单（空串 = 继承全局，不做默认值回退）
@@ -2635,15 +3638,16 @@ window.__ModuleLoader__.load({
       // 直接把当前表单值当 query 传给 host，所以未保存的改动也能预览。
       const previewKey = JSON.stringify({ p: pickPersona(local), on: local.enabled !== false, m: local.memory?.enabled, x: local.memory?.maxInjected, w: state.workspacePath })
       React.useEffect(() => {
-        if (!showPreview || !config) return undefined
+        if (!previewOpen || !config) return undefined
         const timer = setTimeout(() => {
           controller.loadPreview(state.workspacePath, { ...pickPersona(local), enabledHint: undefined })
         }, 400)
         return () => clearTimeout(timer)
-      }, [showPreview, previewKey])
+      }, [previewOpen, previewKey])
 
       const patchLocal = (key, value) => setLocal((prev) => ({ ...prev, [key]: value }))
       const patchMemory = (key, value) => setLocal((prev) => ({ ...prev, memory: { ...prev.memory, [key]: value } }))
+      const patchQuality = (key, value) => setLocal((prev) => ({ ...prev, quality: { ...prev.quality, [key]: value } }))
       const patchWs = (key, value) => setWsLocal((prev) => ({ ...prev, [key]: value }))
 
       // 提交给 host 的载荷形状（保存与脏检查必须完全一致，否则会出现「看着没改却一直脏」）
@@ -2653,6 +3657,10 @@ window.__ModuleLoader__.load({
         workspaceOverridesEnabled: source.workspaceOverridesEnabled !== false,
         workspaceFileDir: source.workspaceFileDir ?? '.dsh-anima',
         ...toolDefaults(source),
+        quality: qualityDefaults(source),
+        // 质检段用 qualityDefaults 归一，理由与 memory 段手写每个数字相同：
+        // 非法值必须先被夹到合法集合里再提交，否则宿主 sanitize 会整条拒绝，
+        // 而界面已经把用户的选择显示出来了。
         memory: {
           enabled: source.memory?.enabled !== false,
           autoCapture: source.memory?.autoCapture !== false,
@@ -2660,6 +3668,7 @@ window.__ModuleLoader__.load({
           nightlyHour: Number(source.memory?.nightlyHour ?? 3),
           maxPending: Number(source.memory?.maxPending ?? 200),
           maxInjected: Number(source.memory?.maxInjected ?? 40),
+          maxInjectedChars: Number(source.memory?.maxInjectedChars ?? 4000),
           notifyOnSessionStart: source.memory?.notifyOnSessionStart !== false
         }
       })
@@ -2709,6 +3718,28 @@ window.__ModuleLoader__.load({
           return
         }
         setToast({ kind: 'ok', text: Object.keys(overrides).length === 0 ? t('ws.cleared') : t('ws.saved') })
+      }
+
+      // 底部保存栏按一次要落两处：全局配置与工作区覆盖。两者脏状态独立
+      // （一个写全局、一个写工作区文件），但用户按的是同一个按钮 ——
+      // 只存一边会留下一半「看着存好了其实没存」的改动。
+      //
+      // 全局那份先存，失败就整条停下（不继续写工作区、也不弹成功提示）。
+      // 工作区那份由 doSaveWorkspace 自己弹 toast（保存与清除两种文案不同），
+      // 所以它跑过就不再追加一条，避免连弹两个提示。
+      const doSaveAll = async () => {
+        if (dirty) {
+          const result = await controller.saveConfig(configPayload(local))
+          if (result?.ok === false) {
+            setToast({ kind: 'err', text: result.error })
+            return
+          }
+        }
+        if (wsDirty && state.workspacePath) {
+          await doSaveWorkspace()
+          return
+        }
+        setToast({ kind: 'ok', text: t('common.saved') })
       }
 
       const applyPresetById = async () => {
@@ -2772,6 +3803,25 @@ window.__ModuleLoader__.load({
         setToast({ kind: 'ok', text: t('mem.triageDone') })
       }
 
+      const patrolOnce = async () => {
+        setPatrolRunning(true)
+        const result = await controller.runPatrol()
+        setPatrolRunning(false)
+        if (result?.ok === false) {
+          setToast({ kind: 'err', text: result.error })
+          return
+        }
+        // 安抚语必须是「跑了」而不是「没事」：这次没汇报时，用户需要知道的是
+        // 「它确实跑过并判定为无事」，而不是一句让人以为检查过的「一切正常」。
+        const delivered = Number(result?.delivered) || 0
+        setToast({
+          kind: 'ok',
+          text: delivered > 0
+            ? t('patrol.toastReported').replace('{n}', String(delivered))
+            : t('patrol.toastSilent')
+        })
+      }
+
       const addMemory = async () => {
         if (!(newMemory.text ?? '').trim()) return
         const result = await controller.addMemory(
@@ -2784,6 +3834,76 @@ window.__ModuleLoader__.load({
           return
         }
         setNewMemory({ text: '', note: '', scope: '' })
+      }
+
+      // 体检：只读。查完把结果存在本地，不写进 state —— 它是「这一刻的快照」，
+      // 而 state 会在每次 loadState 后刷新，混在一起会让旧结论看起来是新的。
+      const runCheckup = async () => {
+        setCheckup((prev) => ({ ...(prev ?? {}), running: true }) )
+        const result = await controller.runCheckup()
+        if (result?.ok === false) {
+          setCheckup(null)
+          setToast({ kind: 'err', text: result.error })
+          return
+        }
+        setCheckup({ ...result, running: false, savedAt: new Date().toISOString() })
+        setToast({ kind: 'ok', text: t('checkup.done') })
+      }
+
+      // 「按建议标为有争议」—— 引擎给的是候选，这里必须由用户点一次才落盘。
+      // 传的是 suggestion.state，不是写死的 'contradicted'：将来若某种发现有别的
+      // 建议，这里不该假装自己知道该改成什么。
+      const applySuggestion = async (finding) => {
+        const suggestion = finding?.suggestion
+        if (!suggestion || !suggestion.state) return
+        setBusyId(finding.id)
+        const result = await controller.updateMemoryMeta(finding.id, { state: suggestion.state })
+        setBusyId(null)
+        if (result?.ok === false) {
+          setToast({ kind: 'err', text: result.error })
+          return
+        }
+        setToast({ kind: 'ok', text: t('checkup.applied') })
+        // 结果里那条已经处理过了，原地剔掉，避免用户手滑点第二次
+        setCheckup((prev) => {
+          if (!prev) return prev
+          const flagged = (prev.flagged ?? []).filter((f) => f.id !== finding.id)
+          return { ...prev, flagged, clean: (prev.clean ?? 0) + 1 }
+        })
+      }
+
+      const startMetaEdit = (record) => {
+        setMetaEditing(record.id)
+        setMetaDraft({
+          type: record.type ?? 'fact',
+          state: record.state ?? 'current',
+          verifyAt: record.verifyAt ?? '',
+          sourceRef: record.sourceRef ?? ''
+        })
+      }
+
+      const cancelMetaEdit = () => {
+        setMetaEditing(null)
+        setMetaDraft({})
+      }
+
+      const saveMeta = async (id) => {
+        setBusyId(id)
+        // 只提交**真的改了**的字段：全量提交会把「没动过」也当成一次写入，
+        // 而宿主对空变化的回执是 changed: []，用户会以为保存失败了。
+        const result = await controller.updateMemoryMeta(id, metaDraft)
+        setBusyId(null)
+        if (result?.ok === false) {
+          setToast({ kind: 'err', text: result.error })
+          return
+        }
+        const changed = Array.isArray(result.changed) ? result.changed : []
+        setToast({
+          kind: 'ok',
+          text: changed.length === 0 ? t('mem.metaNoChange') : t('mem.metaSaved')
+        })
+        setMetaEditing(null)
+        setMetaDraft({})
       }
 
       // 待确认提议：确认 / 拒绝各一次调用，回执文案走 toast。
@@ -2876,6 +3996,18 @@ window.__ModuleLoader__.load({
           e('span', { className: 'an-badge' }, `v${VERSION}`)
         ),
 
+        // ---------------- 分区导航 ----------------
+        //
+        // 放在标题下、提议条上：提议有时效性要显眼，但它是偶发的一块；
+        // 分区是常驻的、每次进来都要用的东西，放在最上面才找得到。
+        e(SectionNav, { t, active: activeSection, onSelect: selectSection }),
+
+        // ---------------- 最近改了什么 ----------------
+        //
+        // 常驻在分区导航下面：不管当前在哪一栏都看得见。用户要的正是这个
+        // ——「改的咋样我根本不知道改成啥了」。
+        e(RecentChanges, { t, state, controller, setToast }),
+
         // ---------------- 待确认的人设变更 ----------------
         //
         // 只在「工具确认」开启、且模型确实提了一份改动时出现。放在页面最上方是因为
@@ -2913,7 +4045,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'preset',
           t,
-          ...cardState('preset'),
+          ...cardSlot('preset'),
           title: t('preset.title'),
           desc: t('preset.desc'),
           aside: e('span', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
@@ -3008,24 +4140,13 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'identity',
           t,
-          ...cardState('identity'),
+          ...cardSlot('identity'),
           title: t('identity.title'),
           desc: t('identity.desc'),
-          aside: e('div', { className: 'an-actions' },
-            dirty ? e('span', { className: 'an-badge' }, t('common.unsaved')) : null,
-            e('button', {
-              type: 'button',
-              className: 'an-btn an-btn-primary',
-              disabled: !dirty || state.saving,
-              onClick: doSave
-            }, t('common.save')),
-            e('button', {
-              type: 'button',
-              className: 'an-btn',
-              disabled: state.saving,
-              onClick: doReset
-            }, t('common.reset'))
-          )
+          // 保存与恢复默认已经收到页面底部的保存栏里。这张卡头只留状态徽标 ——
+          // 原来这里有六处「保存」（四张卡各一份），点哪一个做的都是同一件事，
+          // 用户得先判断「我现在在哪张卡里」才知道该按哪个。
+          aside: dirty ? e('span', { className: 'an-badge' }, t('common.unsaved')) : null
         },
           e('div', { className: 'an-field' },
             e(Toggle, {
@@ -3098,7 +4219,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'user',
           t,
-          ...cardState('user'),
+          ...cardSlot('user'),
           title: t('user.title'),
           desc: t('user.desc')
         },
@@ -3161,7 +4282,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'style',
           t,
-          ...cardState('style'),
+          ...cardSlot('style'),
           title: t('style.title'),
           desc: t('style.desc')
         },
@@ -3262,7 +4383,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'trail',
           t,
-          ...cardState('trail'),
+          ...cardSlot('trail'),
           title: t('trail.title'),
           desc: t('trail.desc')
         },
@@ -3372,7 +4493,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'ws',
           t,
-          ...cardState('ws'),
+          ...cardSlot('ws'),
           title: t('ws.title'),
           desc: t('ws.desc')
         },
@@ -3584,7 +4705,7 @@ window.__ModuleLoader__.load({
         e(Card, {
           id: 'mem',
           t,
-          ...cardState('mem'),
+          ...cardSlot('mem'),
           title: t('mem.title'),
           desc: t('mem.desc')
         },
@@ -3677,14 +4798,7 @@ window.__ModuleLoader__.load({
               onChange: (value) => patchMemory('notifyOnSessionStart', value)
             })
           ),
-          e('div', { className: 'an-actions' },
-            e('button', {
-              type: 'button',
-              className: 'an-btn an-btn-primary',
-              disabled: !dirty || state.saving,
-              onClick: doSave
-            }, t('common.save'))
-          ),
+          // 这一段的保存按钮已收到页面底部的保存栏（理由见 identity 卡头）。
 
           // 待审缓冲区
           e('div', { style: { marginTop: 20 } },
@@ -3698,9 +4812,26 @@ window.__ModuleLoader__.load({
                   type: 'button',
                   className: 'an-btn an-btn-sm',
                   onClick: triageOnce
-                }, t('mem.triage'))
+                }, t('mem.triage')),
+                // 巡夜可以手动跑一次，且与定时那次走同一条判据 —— 否则「手点一次」
+                // 和「它自己跑一次」会给出不同答案，这个机制就永远没法验。
+                e('button', {
+                  type: 'button',
+                  className: 'an-btn an-btn-sm',
+                  disabled: patrolRunning,
+                  onClick: patrolOnce
+                }, patrolRunning ? t('patrol.running') : t('patrol.run'))
               )
             ),
+            // 巡夜记录：**这是「没汇报」可反查的唯一出口。**
+            // 只报有事之后，沉默有两种意思 —— 巡过了没事 / 巡夜没跑。前者有这一行，
+            // 后者根本没有，于是用户随时能分清。所以这行必须在「没汇报」时也出现。
+            e(PatrolLine, {
+              t,
+              meta: state.patrolMeta ?? null,
+              onRun: patrolOnce,
+              running: patrolRunning
+            }),
             e(MemoryList, {
               t,
               items: pending,
@@ -3769,9 +4900,26 @@ window.__ModuleLoader__.load({
               emptyText: t('mem.emptyAdopted'),
               busy: Boolean(busyId),
               onDecide: decide,
-              onDelete: removeMemory
+              onDelete: removeMemory,
+              metaEditingId: metaEditing,
+              metaDraft,
+              onStartMeta: startMetaEdit,
+              onCancelMeta: cancelMetaEdit,
+              onChangeMeta: (key, value) => setMetaDraft((prev) => ({ ...prev, [key]: value })),
+              onSaveMeta: saveMeta
             })
           ),
+
+          // 记忆体检：只查机器能查的两件事。放在「已采纳」下面，因为它查的正是
+          // 这批已经生效、会被注入的记忆 —— 待审的还没进去，查它没有意义。
+          e(CheckupPanel, {
+            t,
+            result: checkup,
+            busy: checkup?.running === true,
+            applyBusy: Boolean(busyId),
+            onRun: runCheckup,
+            onApply: applySuggestion
+          }),
 
           // 注入情况（每条为什么进 / 不进）+ 本地聚类与冲突提示。
           // 都挂在记忆卡片内部：它们讲的都是「这批记忆接下来会怎么被用」。
@@ -3806,36 +4954,118 @@ window.__ModuleLoader__.load({
             : null
         ),
 
-        // ---------------- 变更记录 ----------------
-        // 放在记忆之后、预览之前：它记录的是「设置页上这些字段被谁改过」，
-        // 挨着被记录的字段群读起来才连得起来。
-        e(AuditCard, {
+        // ---------------- 回答质检 ----------------
+        // 放在记忆之后、变更记录之前：它讲的是「我这条回答会不会被检查」，
+        // 而变更记录讲的是「这些设置被谁改过」——被记录的对象在前，记录在后。
+        e(Card, {
+          id: 'quality',
           t,
-          state,
-          controller,
-          setToast,
-          ...cardState('audit')
-        }),
+          ...cardSlot('quality'),
+          title: t('quality.title'),
+          desc: t('quality.desc')
+        },
+          e('div', { className: 'an-field' },
+            e(Toggle, {
+              id: 'quality-enabled',
+              checked: local.quality.enabled !== false,
+              label: t('quality.enabled'),
+              onChange: (value) => patchQuality('enabled', value)
+            }),
+            e(Hint, null, t('quality.enabledHint'))
+          ),
+          e('div', { className: 'an-field' },
+            e('label', { htmlFor: 'an-quality-ledger' }, t('quality.ledgerLevel')),
+            e('select', {
+              id: 'an-quality-ledger',
+              className: 'an-select',
+              value: local.quality.ledgerLevel ?? 'three',
+              onChange: (event) => patchQuality('ledgerLevel', event.target.value)
+            },
+              LEDGER_LEVELS.map((value) =>
+                e('option', { key: value, value }, t(`quality.ledger.${value}`))
+              )
+            ),
+            e(Hint, null, t('quality.ledgerLevelHint'))
+          ),
+          e('div', { className: 'an-field' },
+            e(Toggle, {
+              id: 'quality-strict',
+              checked: local.quality.strict !== false,
+              label: t('quality.strict'),
+              onChange: (value) => patchQuality('strict', value)
+            }),
+            // 严格档会多判三条（R08 置信度、R11 稻草人、R12 越界自信）。关掉它的
+            // 唯一理由通常是误报变多 —— 所以提示里写清代价，而不是只说「更严格」。
+            e(Hint, null, t('quality.strictHint'))
+          ),
+          e('div', { className: 'an-field' },
+            e(Toggle, {
+              id: 'quality-precheck',
+              checked: local.quality.preStepCheck !== false,
+              label: t('quality.preStepCheck'),
+              onChange: (value) => patchQuality('preStepCheck', value)
+            }),
+            e(Hint, null, t('quality.preStepCheckHint'))
+          ),
+          e('div', { className: 'an-field' },
+            e('label', { htmlFor: 'an-quality-max' }, t('quality.maxFindings')),
+            e('input', {
+              id: 'an-quality-max',
+              className: 'an-input',
+              type: 'number',
+              min: 1,
+              max: 20,
+              value: local.quality.maxFindingsInReminder ?? 5,
+              onChange: (event) => patchQuality('maxFindingsInReminder', Number(event.target.value))
+            }),
+            e(Hint, null, t('quality.maxFindingsHint'))
+          ),
+          // 保存按钮已收到页面底部的保存栏（理由见 identity 卡头）。
+
+          // 运行计数：这一块存在的唯一理由，是让「查了没事」与「压根没跑」可区分。
+          // checks=0 时界面必须明说「没在工作」，不能因为「没有提醒 = 没问题」而显示得
+          // 和一切正常一样 —— 那正是用户定的红线里最忌讳的那种谎报。
+          e('div', { style: { marginTop: 20 } },
+            e('div', { className: 'an-card-title' }, t('quality.stats')),
+            (() => {
+              const stats = state.qualityStats
+              if (!stats) return e('div', { className: 'an-empty' }, t('quality.statsUnknown'))
+              if (stats.checks === 0) {
+                return e('div', { className: 'an-invalid' }, t('quality.statsIdle'))
+              }
+              return e('div', null,
+                e('div', { className: 'an-row', style: { gap: 12, flexWrap: 'wrap' } },
+                  e('span', { className: 'an-badge' }, `${t('quality.statsChecks')} ${stats.checks}`),
+                  e('span', { className: 'an-badge' }, `${t('quality.statsReminders')} ${stats.reminders}`),
+                  stats.suppressed > 0
+                    ? e('span', { className: 'an-badge' }, `${t('quality.statsSuppressed')} ${stats.suppressed}`)
+                    : null
+                ),
+                stats.last
+                  ? e(Hint, null,
+                      `${t('quality.statsLast')} seq=${stats.last.seq} · ${stats.last.chars} ${t('quality.statsChars')} · `
+                      + `${t('quality.statsFindings')} ${stats.last.findings.length > 0 ? stats.last.findings.join('、') : t('quality.statsNone')}`
+                    )
+                  : null
+              )
+            })()
+          )
+        ),
 
         // ---------------- 预览 ----------------
         e(Card, {
           id: 'preview',
           t,
-          ...cardState('preview'),
+          ...cardSlot('preview'),
           title: t('preview.title'),
           desc: t('preview.desc'),
-          aside: e('div', { className: 'an-actions' },
-            showPreview
-              ? e('span', { className: 'an-badge' }, state.preview?.draft ? t('preview.live') : t('preview.saved'))
-              : null,
-            e('button', {
-              type: 'button',
-              className: 'an-btn an-btn-sm',
-              onClick: () => setShowPreview((open) => !open)
-            }, t('preview.toggle'))
-          )
+          aside: previewOpen && state.preview
+            ? e('div', { className: 'an-actions' },
+                e('span', { className: 'an-badge' }, state.preview.draft ? t('preview.live') : t('preview.saved'))
+              )
+            : null
         },
-          showPreview
+          previewOpen
             ? e('div', null,
                 state.previewError ? e(ErrorBox, { error: state.previewError }) : null,
                 state.previewLoading && !previewText
@@ -3868,6 +5098,34 @@ window.__ModuleLoader__.load({
                   : null
               )
             : null
+        ),
+
+        // ---------------- 底部保存栏 ----------------
+        //
+        // 这里是这一页**唯一**的保存与恢复默认入口。原来六处按钮散在四张卡里
+        // （其中四条调的都是同一个 doSave），用户要先判断「我在哪张卡」才知道
+        // 该按哪个；而把所有卡都收进分区导航之后，那张卡可能根本不在眼前。
+        //
+        // 工作区覆盖有自己的脏状态（写的是工作区文件，不是全局配置），
+        // 但对用户来说都是「我改了东西还没落盘」，所以同一根栏里一起报、一起存。
+        e('div', { className: 'an-savebar' },
+          e('div', { className: dirty || wsDirty ? 'an-savebar-text an-savebar-text-dirty' : 'an-savebar-text' },
+            dirty || wsDirty ? t('savebar.dirty') : t('savebar.clean')
+          ),
+          e('div', { className: 'an-actions' },
+            e('button', {
+              type: 'button',
+              className: 'an-btn',
+              disabled: state.saving || state.workspaceSaving,
+              onClick: doReset
+            }, t('common.reset')),
+            e('button', {
+              type: 'button',
+              className: 'an-btn an-btn-primary',
+              disabled: !(dirty || wsDirty) || state.saving || state.workspaceSaving,
+              onClick: doSaveAll
+            }, t('common.save'))
+          )
         )
       )
     }

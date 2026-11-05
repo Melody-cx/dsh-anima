@@ -4,6 +4,7 @@
 // 退出码：0 全通过；1 有失败。
 
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -31,11 +32,14 @@ import {
   compileIdentity,
   compileInstructions,
   compileMemory,
+  compileOmissionNotice,
   compilePendingNotice,
   compilePersona,
+  compileRememberGuide,
   compileRules,
   compileStyle,
-  compileUserProfile
+  compileUserProfile,
+  safeSection
 } from '../lib/prompt.mjs'
 import {
   FIELD_EXAMPLES,
@@ -52,12 +56,18 @@ import {
   sanitizeCustomPresets
 } from '../lib/presets.mjs'
 import {
+  applyMemoryMeta,
   contentDigest,
+  describeInjectionReason,
   findCredentials,
+  formatMemoryLine,
   groupByStatus,
   makeCandidate,
+  normalizeMemoryType,
   selectForInjection,
-  triage
+  summarizeOmission,
+  triage,
+  utf8Bytes
 } from '../lib/memory.mjs'
 import {
   readOverrides,
@@ -76,6 +86,15 @@ import {
 } from '../lib/import.mjs'
 import { StateStore } from '../lib/store.mjs'
 import {
+  checkResponse,
+  compileLedgerRules,
+  compileQualityRules,
+  detectLedgerTriggers,
+  UNCOVERABLE_RULES,
+  hasLedgerBlock,
+  parseLedgerBlock
+} from '../lib/quality.mjs'
+import {
   AUDIT_ACTORS,
   AUDIT_MAX_RECORDS,
   AUDIT_SOURCE_TEXT,
@@ -88,6 +107,18 @@ import {
   summarizeAudit,
   trimAudit
 } from '../lib/audit.mjs'
+import { auditMemories, extractPaths, extractPathsWithStats } from '../lib/memory-audit.mjs'
+import { DECAY_WINDOWS_DAYS, decayInfo, decayRank, decayTag, memoryAgeDays } from '../lib/decay.mjs'
+import {
+  MAX_FLAGGED_DETAIL_CHARS,
+  MAX_FLAGGED_ITEMS,
+  assessPatrol,
+  compactFlagged,
+  parsePatrolSignature,
+  patrolSignature,
+  planNightlyWake
+} from '../lib/patrol.mjs'
+import { createNoticeMessage, patrolNoticeText } from '../lib/injection.mjs'
 
 let passed = 0
 const failures = []
@@ -411,8 +442,7 @@ test('triage 不动已采纳与已丢弃项', () => {
   assert.deepEqual(toDiscard, [])
 })
 
-test('selectForInjection 只取已采纳且受上限约束', () => {
-  const mk = (text, status, day) => ({
+test('selectForInjection 只取已采纳且受上限约束', () => {  const mk = (text, status, day) => ({
     ...makeCandidate({ text }).record,
     status,
     capturedAt: new Date(Date.UTC(2026, 0, day)).toISOString()
@@ -423,6 +453,76 @@ test('selectForInjection 只取已采纳且受上限约束', () => {
   assert.deepEqual(selectForInjection(records, 2).selected.map((r) => r.text), ['新', '中'])
   assert.deepEqual(selectForInjection(records, 0).selected, [])
   assert.equal(selectForInjection(records, 10).selected.length, 3)
+})
+
+test('utf8Bytes 按真实 UTF-8 长度算，不按 UTF-16 code unit', () => {
+  // 这是「4000 字符其实等于 12000 字节」的账本基础。若这里用
+  // `String.prototype.length`，中文会被算成 1/3。
+  assert.equal(utf8Bytes(''), 0)
+  assert.equal(utf8Bytes(null), 0)
+  assert.equal(utf8Bytes(123), 0)
+  assert.equal(utf8Bytes('abc'), 3)
+  assert.equal(utf8Bytes('中文'), 6)
+  assert.equal(utf8Bytes('🐟'), 4, '星平面字符不能按 2 个 code unit 算成 2 字节')
+  assert.equal('🐟'.length, 2, '前提：JS 的 .length 在这里确实是 2')
+})
+
+test('预算挤掉条目时必须能说出「几条、卡在哪」——不能静默', () => {
+  const mk = (text, day) => ({
+    ...makeCandidate({ text }).record,
+    status: 'adopted',
+    capturedAt: new Date(Date.UTC(2026, 0, day)).toISOString()
+  })
+  const records = [mk('一二三四五六七八九十'.repeat(4), 1), mk('甲乙丙丁戊己庚辛壬癸'.repeat(4), 2)]
+
+  // 字符预算只够放 0 条：这是最该被说清楚的情况，不能报成「没超」。
+  const starved = selectForInjection(records, 10, { maxInjectedChars: 30 })
+  assert.equal(starved.selected.length, 0)
+  assert.equal(starved.budget.limitedBy, 'chars', '一条都没放下时，仍然要归因到字符预算')
+  assert.equal(summarizeOmission(starved).count, 2)
+  assert.ok(starved.budget.usedBytes === 0)
+
+  // 条数上限：归因必须是 count，不是 chars。
+  const capped = selectForInjection(records, 1, { maxInjectedChars: 0 })
+  assert.equal(capped.budget.limitedBy, 'count')
+  assert.equal(summarizeOmission(capped).count, 1)
+
+  // 都够：既不报省略，也不编一个归因。
+  const roomy = selectForInjection(records, 10, { maxInjectedChars: 4000 })
+  assert.equal(roomy.budget.limitedBy, 'none')
+  assert.equal(summarizeOmission(roomy).count, 0, '没省略就一个字都不许说')
+  assert.ok(roomy.budget.usedBytes > roomy.budget.usedChars, '中文的字节数必然大于字符数')
+})
+
+test('因「不属于本工作区」而没进去的，不算预算省略（那是另一回事）', () => {
+  const rec = { ...makeCandidate({ text: '别的项目的偏好' }).record, status: 'adopted', layer: 'workspace', scope: 'D:\\other' }
+  const sel = selectForInjection([rec], 10, { maxInjectedChars: 4000, cwd: 'D:\\mine' })
+  assert.equal(sel.selected.length, 0)
+  // 说「因预算没进去」会误导模型以为「多给点预算就能看到」。
+  assert.equal(summarizeOmission(sel).count, 0)
+  assert.equal(sel.budget.limitedBy, 'none')
+})
+
+test('单条渲染失败不连累整段：其余照常注入，失败那条单独归因成 error 而不是预算', () => {
+  // 造一条 text 的 String() 会抛错的记录 —— formatMemoryLine 的第一行就是
+  // `String(record?.text ?? '')`，必然在这里炸。这模拟的是「别的插件写进来的脏数据」。
+  // 用 text 而不是 capturedAt，是因为排序键那一步也会 String(capturedAt)，
+  // 那样测到的是排序崩，不是渲染保护。
+  const poison = {
+    ...makeCandidate({ text: '占位' }).record,
+    status: 'adopted',
+    layer: 'global',
+    text: { toString() { throw new Error('boom') } }
+  }
+  const good = { ...makeCandidate({ text: '这条是好的' }).record, status: 'adopted', layer: 'global' }
+  const sel = selectForInjection([poison, good], 10, { maxInjectedChars: 4000 })
+  assert.equal(sel.selected.length, 1, '坏的那条不能把好的那条一起带走')
+  assert.equal(sel.budget.renderFailed, 1)
+  // 归因不能是 chars：调大预算对这条一点用都没有，用户会改错地方。
+  assert.equal(sel.budget.limitedBy, 'error')
+  const bad = sel.decisions.find((d) => d.reason === 'render-failed')
+  assert.ok(bad, '坏掉的那条必须留下一条 render-failed 决定，不能悄无声息')
+  assert.ok(describeInjectionReason('render-failed').includes('渲染失败'))
 })
 
 test('groupByStatus 三态分组互不污染', () => {
@@ -540,11 +640,142 @@ test('compileDisabledNotice 明确声明旧设定作废，且不带任何用户�
   assert.ok(withConfig.length > text.length)
 })
 
+// ==================== 宿主变量插值：我们四段必须关掉它 ====================
+//
+// 背景：宿主 renderPrompt / renderContextSections 会对每个 section 跑
+// interpolate()，规则是「`{{` 后必须紧跟 标识符}}」，且标识符必须已注册在
+// assembly.variables 里，否则抛错，抛出点在 systemPrompt.assemble() 内部。
+// 我们四段里有两段装的是用户自由文本（persona、记忆正文），
+// 用户写一句 `{{key: value}}` 就能让整轮装配抛出来。
+//
+// 这里的回归锁两件事：
+//   1. 我们的编译函数**不做**任何插值转义（保持原样，不吞用户文本）；
+//   2. 因此注册 section 时必须传 interpolate:false —— 见下一条对 index.mjs 的源码断言。
+
+/** 复刻宿主 @deepseek-ai/dsh-system-prompt 的 interpolate()，只保留抛错相关分支。 */
+function hostInterpolate(text, variables = {}) {
+  const GROUP_AT = /^\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/
+  let result = ''
+  let last = 0
+  for (let open = text.indexOf('{{'); open >= 0; open = text.indexOf('{{', last)) {
+    const group = GROUP_AT.exec(text.slice(open))
+    if (group === null) {
+      if (text.indexOf('}}', open + 2) >= 0) {
+        throw new Error(`malformed prompt variable reference at "${text.slice(open, open + 16)}…"`)
+      }
+      result += text.slice(last, open + 2)
+      last = open + 2
+      continue
+    }
+    const name = group[0].slice(2, -2)
+    if (!Object.hasOwn(variables, name)) throw new Error(`unknown prompt variable "{{${name}}}"`)
+    result += text.slice(last, open) + variables[name]
+    last = open + group[0].length
+  }
+  return result + text.slice(last)
+}
+
+test('宿主的 interpolate 确实会被用户文本触发（这条本身是前提，不是我们的功能）', () => {
+  // 如果哪天宿主改成不再抛错，这条会失败 —— 那是好事，届时可以删掉 interpolate:false。
+  assert.throws(() => hostInterpolate('我的笔记格式是 {{key: value}}'), /malformed/)
+  assert.throws(() => hostInterpolate('我的名字是 {{name}}'), /unknown prompt variable/)
+  // 单层大括号不受影响，说明这不是「禁用大括号」，只是「禁用双大括号形态」。
+  assert.equal(hostInterpolate('用 {大括号} 没问题'), '用 {大括号} 没问题')
+})
+
+test('compilePersona 原样透传用户文本里的 {{ }}，不做转义（所以必须靠 interpolate:false 兜底）', () => {
+  const text = compilePersona({
+    agentName: '小沃',
+    userBio: '我的笔记格式是 {{key: value}}',
+    customInstructions: '用 {{风格}} 说话'
+  })
+  // 编译层必须保持用户原话：吞掉或改写用户填的内容是更糟的失败方式。
+  assert.ok(text.includes('{{key: value}}'), '不应转义或删除用户写的双大括号')
+  assert.ok(text.includes('{{风格}}'))
+  // 而且这段文本真的会让宿主抛 —— 证明风险是实的，不是想象的。
+  assert.throws(() => hostInterpolate(text), /malformed|unknown prompt variable/)
+})
+
+test('compileMemory 同样原样透传记忆正文里的 {{ }}', () => {
+  const text = compileMemory([
+    { id: 'm1', text: '记一下：模板写法是 {{a.b}}', type: 'fact', layer: 'global' }
+  ])
+  assert.ok(text.includes('{{a.b}}'))
+  assert.throws(() => hostInterpolate(text), /malformed|unknown prompt variable/)
+})
+
+test('index.mjs 注册的五个 section 全部带 interpolate:false', () => {
+  // 源码级断言：这是唯一能拦住「下一个人删掉那个字段」的机械检查。
+  // 走字符串匹配而不是 import index.mjs，是因为 index.mjs 依赖宿主包。
+  const source = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8')
+  const registrations = source.match(/systemPrompt\.section\(\{[^}]*\}\)/g) ?? []
+  assert.equal(registrations.length, 5, `应注册 5 个 section，实际 ${registrations.length}`)
+  for (const line of registrations) {
+    assert.match(line, /interpolate:\s*false/, `section 缺少 interpolate:false：${line.slice(0, 80)}`)
+  }
+})
+
+test('safeSection：渲染抛错时返回空串，不把异常带出去', () => {
+  // 这条守的是一条会「带走整个回合」的边界：宿主 assemble()/renderPrompt()
+  // 全程没有 try/catch，我们的 text 函数抛一次，那一轮请求就直接失败。
+  const report = []
+  const out = safeSection('identity', () => {
+    throw new Error('脏数据')
+  }, (m) => report.push(m))
+  assert.equal(out, '')
+  assert.equal(report.length, 1, '失败时必须留一行日志，否则「今天为什么失忆」查不到')
+  assert.match(report[0], /identity/)
+  assert.match(report[0], /脏数据/)
+})
+
+test('safeSection：非字符串返回一律降级为空串', () => {
+  // 宿主拿到 undefined 会炸在 join 之后的 .length 上，那里已经没有 try 罩着了。
+  for (const bad of [undefined, null, 42, {}, []]) {
+    assert.equal(safeSection('memory', () => bad), '', `返回值 ${String(bad)} 应被降级`)
+  }
+  assert.equal(safeSection('memory', () => 'ok'), 'ok')
+})
+
+test('safeSection：日志回调自己抛错也不能把降级带走', () => {
+  const out = safeSection('quality', () => {
+    throw new Error('渲染炸了')
+  }, () => {
+    throw new Error('日志也炸了')
+  })
+  assert.equal(out, '')
+})
+
+test('safeSection 在 index.mjs 里包住了全部四个段', () => {
+  // 源码级断言：新增一个段却忘了包护罩，是这类改动最容易漏的回归。
+  const source = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8')
+  for (const label of ['identity', 'memory', 'pending', 'quality']) {
+    assert.match(source, new RegExp(`renderSection\\('${label}'`), `段 ${label} 没有接护罩`)
+  }
+})
+
 test('compilePersona 中「助手身份」始终排在「用户背景」之前', () => {
   // 这条顺序是语义安全的一部分：先说清「这段说的是我」，再说「那段说的是用户」，
   // 反过来会让模型把紧随其后的用户背景当成自己的设定。
   const text = compilePersona({ agentName: '小沃', userBio: '用户是研究生' })
   assert.ok(text.indexOf('## 助手身份') < text.indexOf('## 用户背景'))
+})
+
+test('compileMemory 单条渲染失败要说出来：少了一条不能长得像「本来就只有这些」', () => {
+  // 一条坏数据 + 一条好的：正文照常给，末尾必须有一句话说明少了一条。
+  // 不给的话，模型会把「只看到 1 条」当成「只有 1 条」——它不知道自己漏了。
+  const poison = { text: { toString() { throw new Error('boom') } }, layer: 'global' }
+  const text = compileMemory([poison, { text: '用户偏好中文' }])
+  assert.match(text, /用户偏好中文/, '好的那条必须照常注入')
+  assert.match(text, /另有 1 条/, `必须说清少了几条，实际：${text}`)
+  assert.match(text, /渲染失败/)
+})
+
+test('compileMemory 全部渲染失败：不能返回空串冒充「没有记忆」', () => {
+  const poison = { text: { toString() { throw new Error('boom') } }, layer: 'global' }
+  const text = compileMemory([poison])
+  assert.notEqual(text, '', '全部失败时返回空串，等于对模型说「没有任何记忆」')
+  assert.match(text, /一条都没能读到/)
+  assert.match(text, /不是「没有记忆」/)
 })
 
 test('compileMemory 空数组返回空串', () => {
@@ -555,9 +786,101 @@ test('compileMemory 空数组返回空串', () => {
   assert.match(text, /用户偏好中文/)
 })
 
+test('compileMemory 全被预算挤掉时不能静默：要说清有几条没放下', () => {
+  // 旧实现在这条路径上返回 ''，等于对模型说「一条记忆都没有」，
+  // 而真相是「有 N 条，但这轮放不下」。两种沉默长得一模一样，模型无从分辨。
+  const gone = compileMemory([], { count: 3, maxCount: 40, maxChars: 4000 })
+  assert.notEqual(gone, '', '有省略时返回空串就是谎报「没有记忆」')
+  assert.match(gone, /3 条/)
+  assert.match(gone, /40 条/)
+  // 不带省略参数时保持旧行为：真的没记忆就一个字不写。
+  assert.equal(compileMemory([]), '')
+  assert.equal(compileMemory([], { count: 0, maxCount: 40, maxChars: 4000 }), '')
+})
+
 test('compilePendingNotice 无候选时返回空串', () => {
   assert.equal(compilePendingNotice(0), '')
   assert.match(compilePendingNotice(3), /3 条/)
+})
+
+// ==================== remember 行为指引段 ====================
+//
+// 这一段存在的原因不是「补充说明」，是「工具没人用」。实测 anima.json 的
+// memories 表长期 0 条，而 remember 工具本身是可用的 —— 模型不知道什么时候该调它。
+
+test('compileRememberGuide：必须讲清「投递 ≠ 生效」，否则模型会对用户谎称已记住', () => {
+  const text = compileRememberGuide()
+  // 这一句是整段的存在理由。删掉它，模型会把「投递到缓冲区」说成「我记住了」，
+  // 而用户看到的是一条永远不会出现在记忆里的记录。
+  assert.match(text, /投递不等于生效|投递 ≠ 生效/, '必须明说投递不等于生效')
+  assert.match(text, /记住/, '必须给出「不要说记住了」的措辞')
+})
+
+test('compileRememberGuide：必须同时给出「该记」与「不该记」，缺一半就会滥记', () => {
+  const text = compileRememberGuide()
+  assert.match(text, /该记的/, '缺少正面判据')
+  assert.match(text, /不该记的/, '缺少负面判据 —— 只有正面判据时模型会能记就记')
+})
+
+test('compileRememberGuide：明确点名临时任务状态、密钥、可读代码三类不该记', () => {
+  const text = compileRememberGuide()
+  // 这三类是实测里最容易滥记的：临时状态最多，密钥最危险，可读代码最没用。
+  assert.match(text, /临时任务状态/, '临时任务状态是滥记的头号来源')
+  assert.match(text, /密钥|令牌|密码/, '凭据类必须有明确禁令')
+  assert.match(text, /代码|文件/, '从代码里读得出的东西不该占记忆位')
+})
+
+test('compileRememberGuide：要求 sourceRef，且明写「写不出就留空不要编」', () => {
+  const text = compileRememberGuide()
+  assert.match(text, /sourceRef/)
+  // 「写不出就留空」这条比「必须给出处」更重要：没有它，模型会为了填满字段而编一个来源，
+  // 而编出来的来源比没有来源更难被发现。
+  assert.match(text, /留空/, '必须允许留空，否则会逼出伪引用')
+  assert.match(text, /不要编|别编/, '必须显式禁止编造来源')
+})
+
+test('compileRememberGuide：四种 type 全部列出，且说清失效方式不同', () => {
+  const text = compileRememberGuide()
+  for (const t of ['fact', 'preference', 'stance', 'event']) {
+    assert.ok(text.includes(t), `缺少类型 ${t}`)
+  }
+  assert.match(text, /失效|过期|归档/, '必须说明类型决定它什么时候失效')
+})
+
+test('compileOmissionNotice：没省略就一个字不写，有省略必须说清几条与上限', () => {
+  assert.equal(compileOmissionNotice(null), '')
+  assert.equal(compileOmissionNotice({ count: 0, maxCount: 40, maxChars: 4000 }), '')
+  assert.equal(compileOmissionNotice({ count: -3 }), '', '负数不该被当成成绩')
+
+  const one = compileOmissionNotice({ count: 3, maxCount: 40, maxChars: 4000 })
+  assert.match(one, /3 条/)
+  assert.match(one, /40 条/)
+  assert.match(one, /4000 字/)
+  // 这句是本改动的全部目的：让模型知道「没看到 ≠ 没记过」。
+  assert.match(one, /不代表没记过/)
+})
+
+test('compileMemory 带上省略提示后，正文照旧、提示在末尾', () => {
+  const rows = [{ text: '用户偏好中文', layer: 'global' }]
+  const plain = compileMemory(rows)
+  assert.doesNotMatch(plain, /因预算未注入/)
+
+  const withNotice = compileMemory(rows, { count: 2, maxCount: 40, maxChars: 4000 })
+  assert.match(withNotice, /用户偏好中文/)
+  assert.match(withNotice, /另有 2 条/)
+  // 提示必须在全部条目之后：夹在中间会被机当成「下一条记忆」读。
+  assert.ok(withNotice.lastIndexOf('用户偏好中文') < withNotice.lastIndexOf('另有 2 条'))
+})
+
+test('compileMemory 的分段形态同样要带省略提示', () => {
+  const rows = [
+    { text: '全局的偏好', layer: 'global' },
+    { text: '本项目的约定', layer: 'workspace' }
+  ]
+  const text = compileMemory(rows, { count: 1, maxCount: 40, maxChars: 4000 })
+  assert.match(text, /### 全局/)
+  assert.match(text, /### 本工作区/)
+  assert.ok(text.lastIndexOf('本项目的约定') < text.lastIndexOf('另有 1 条'))
 })
 
 // ==================== workspace ====================
@@ -1194,6 +1517,169 @@ test('resetConfig 在用户没有自建预设时给出空数组而不是 undefin
   })
 })
 
+// ==================== meta 表 schema 完整性 ====================
+//
+// 真实缺陷（2026-10-24 发现）：`metaSchema` 只声明了三个 triage 字段，没有 `patrol`。
+// 写入是原样落盘（所以 anima.json 里 patrol 数据完整），**读回时被 zod 剥成 `{}`**。
+// 两处后果：
+//   ① /api/anima/state 的 patrolMeta 恒为空 → 验收项 live-patrol 报 FAIL；
+//   ② 更要命的是 runPatrol 自己读 `previous.signature` 也是空的 ⇒ 每次巡夜都
+//      当成「头一回」，判据退化成「每次都算新事」，每次重启后必报一次。
+//
+// 为什么原有测试抓不到：`makeOpenableDomain` 是**原样存取**的假域，不做任何校验，
+// 于是「schema 少一个键」这类 bug 在纯函数测试里完全不可见。下面这个替身按 spec
+// 里的 zod schema 逐条解析，复刻真实包「读回即校验」的行为。
+
+/** 会像真实 storage-domain 那样逐条校验的假域：读回时按 spec 的 zod schema 解析。 */
+function makeValidatingDomain() {
+  return {
+    async open(spec) {
+      const tables = new Map(Object.keys(spec.tables).map((name) => [
+        name,
+        { raw: new Map(), schema: spec.tables[name]?.valueSchema }
+      ]))
+      return {
+        name: spec.name,
+        table: (name) => {
+          const t = tables.get(name)
+          return {
+            // 关键：读回时过一遍 schema。真实包也是这么做的 —— 未声明的键会被
+            // zod 的对象默认行为（strip）静默丢弃，这正是 bug 的隐蔽之处。
+            get: (key) => {
+              const raw = t.raw.get(key)
+              if (raw === undefined) return undefined
+              return t.schema ? t.schema.parse(raw) : raw
+            },
+            put: async (key, value) => { t.raw.set(key, value) },
+            entries: () => t.raw.entries(),
+            get size() { return t.raw.size }
+          }
+        },
+        close: async () => {}
+      }
+    }
+  }
+}
+
+test('meta 表能完整读回 patrol 记录（schema 少一个键 = 巡夜每次都当成头一回）', async () => {
+  await withTempHome(async () => {
+    const domain = makeValidatingDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+    const table = await store.table('meta')
+
+    const written = {
+      at: '2026-10-23T16:55:15.001Z',
+      day: '2026-10-24',
+      reason: 'catch-up',
+      signature: 'p:|f:|t:0',
+      reported: false,
+      wouldReport: false,
+      delivered: 0,
+      reasons: [],
+      facts: { pending: 0, flagged: 0, removed: 0 },
+      added: null,
+      cleared: null,
+      checked: 21
+    }
+    await table.put('patrol', written)
+    const back = table.get('patrol')
+
+    assert.equal(back?.signature, 'p:|f:|t:0', 'signature 读不回来 ⇒ 判据退化成「每次都算新事」')
+    assert.equal(back?.at, written.at, 'at 是「沉默可反查」的唯一依据，不能丢')
+    assert.equal(back?.checked, 21)
+    assert.equal(back?.reported, false, 'reported 必须是布尔，不是 undefined')
+    // 反向保护：真没写过的键仍然是 undefined，不能因为 schema 加了默认值就凭空多出一条
+    assert.equal(table.get('从来没写过'), undefined)
+  })
+})
+
+test('meta 表能读回体检明细（这是同一个 bug 最容易重演的地方）', async () => {
+  await withTempHome(async () => {
+    const domain = makeValidatingDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+    const table = await store.table('meta')
+
+    // 走真实链路：先用 compactFlagged 压出落盘形状，再写、再读回。
+    // 手写一个「我以为的形状」会漏掉 compactFlagged 真产出的字段名。
+    const compact = compactFlagged([
+      { id: 'm-1', text: '甲', findings: [{ kind: 'path-missing', detail: '路径没了', evidence: 'fs says no' }] },
+      { id: 'm-2', text: '乙', findings: [{ kind: 'verify-expired', detail: '复核点过期', evidence: 'verifyAt < today' }] }
+    ])
+    await table.put('patrol', {
+      at: '2026-10-25T00:00:00.000Z',
+      facts: { pending: 0, flagged: 2, removed: 0 },
+      checked: 21,
+      flaggedItems: compact.items,
+      flaggedDropped: compact.dropped
+    })
+    const back = table.get('patrol')
+
+    assert.equal(back?.flaggedItems?.length, 2, '明细读不回来 ⇒ 界面上只剩一个数字，用户问「是哪条」无处可查')
+    assert.equal(back?.flaggedItems?.[0]?.id, 'm-1')
+    assert.equal(back?.flaggedItems?.[0]?.detail, '路径没了')
+    assert.deepEqual(back?.flaggedItems?.[1]?.kinds, ['verify-expired'])
+    assert.equal(back?.flaggedDropped, 0, '「丢了几条」也不能被 schema 剥掉')
+  })
+})
+
+test('meta 表的 triage 记录不因新增 patrol 键而改变形状（加键只放宽，不收紧）', async () => {
+  await withTempHome(async () => {
+    const domain = makeValidatingDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+    const table = await store.table('meta')
+
+    await table.put('triage', { lastTriageDay: '2026-10-24', lastTriageAt: '2026-10-23T16:55:14.995Z' })
+    const back = table.get('triage')
+    assert.equal(back?.lastTriageDay, '2026-10-24')
+    assert.equal(back?.lastTriageAt, '2026-10-23T16:55:14.995Z')
+    assert.equal(back?.patrol, undefined, '没写过的 patrol 不得凭空出现')
+  })
+})
+
+// ==================== 子对象深合并回归 ====================
+// 真实缺陷（2026-10-19 修）：updateConfig 原先把 patch 直接展开进 migrateConfig，
+// 只对 memory 做了嵌套合并。新增 quality 子对象后，用户改一个 quality.enabled，
+// 同一个 patch 里没出现的 ledgerLevel / maxFindingsInReminder 就会被
+// migrateConfig 用默认值填回 —— 表现是「改一个开关，另三个设置被悄悄重置」，
+// 且不报错。这组测试锁住「只改一个子键，其余子键必须原样保留」。
+test('updateConfig 只改 quality 的一个子键时，其余子键保持不变', async () => {
+  await withTempHome(async () => {
+    const domain = makeOpenableDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+
+    await store.updateConfig({
+      quality: { enabled: true, strict: true, ledgerLevel: 'five', maxFindingsInReminder: 9 }
+    })
+    // 只覆盖 enabled，另外三项一个字都不提。
+    const { config: next } = await store.updateConfig({ quality: { enabled: false } })
+
+    assert.equal(next.quality.enabled, false, '被显式改的键要生效')
+    assert.equal(next.quality.strict, true, '未出现的 strict 必须保留用户设过的值')
+    assert.equal(next.quality.ledgerLevel, 'five', '未出现的 ledgerLevel 不得回退默认 three')
+    assert.equal(next.quality.maxFindingsInReminder, 9, '未出现的 maxFindingsInReminder 不得回退默认 5')
+  })
+})
+
+test('updateConfig 只改 memory 的一个子键时，其余子键保持不变（既有行为不得回退）', async () => {
+  await withTempHome(async () => {
+    const domain = makeOpenableDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+
+    await store.updateConfig({ memory: { maxInjected: 12, maxInjectedChars: 1500, defaultLayer: 'workspace' } })
+    const { config: next } = await store.updateConfig({ memory: { enabled: false } })
+
+    assert.equal(next.memory.enabled, false)
+    assert.equal(next.memory.maxInjected, 12, '未出现的 maxInjected 必须保留')
+    assert.equal(next.memory.maxInjectedChars, 1500, '未出现的 maxInjectedChars 必须保留')
+    assert.equal(next.memory.defaultLayer, 'workspace', '未出现的 defaultLayer 必须保留')
+  })
+})
+
 // ==================== 人设变更审计日志（纯函数） ====================
 // 这组测的是「记录本身是否可信」：同一个字段被改成不同值必须看得出差别，
 // 取值取不到时必须落成 null 而不是 undefined（undefined 会被 JSON 丢掉）。
@@ -1554,6 +2040,838 @@ test('IMPORT_PROMPT_FULL 要求保留用户原话（改写过的偏好没有价�
 test('导入的常量彼此自洽（限额为正、且条数上限不是「无限」）', () => {
   assert.ok(Number.isInteger(IMPORT_MAX_ITEMS) && IMPORT_MAX_ITEMS > 0 && IMPORT_MAX_ITEMS <= 500)
   assert.ok(Number.isInteger(IMPORT_MAX_SOURCE) && IMPORT_MAX_SOURCE >= 1000)
+})
+
+// ==================== 记忆类型与状态标签（2026-10-19 新增字段） ====================
+// 这组测的是「新字段不会把旧数据弄坏，也不会把新语义静默吃掉」。
+// 真实介质上的验证已单独跑过（21 条存量记忆用新 schema 全部通过，新字段往返不丢），
+// 这里锁的是那条结论的**代码侧**依据，防止以后有人给 schema 加 .strict() 或删字段。
+await section('memory-type')
+
+test('normalizeMemoryType 对未知取值回退默认，不拒绝也不伪造', () => {
+  assert.equal(normalizeMemoryType('fact'), 'fact')
+  assert.equal(normalizeMemoryType('stance'), 'stance')
+  // 模型面对自由文本时最容易写出的三类别名：不回退就等于把整条记忆拒收，
+  // 而「类型猜错了」远没有「这条记忆丢了」严重。
+  assert.equal(normalizeMemoryType(undefined), 'fact')
+  assert.equal(normalizeMemoryType(''), 'fact')
+  assert.equal(normalizeMemoryType('事实'), 'fact')
+})
+
+test('makeCandidate 接受 type / sourceRef / verifyAt，并把它们写进记录', () => {
+  const at = new Date('2026-10-19T10:00:00.000Z')
+  const { ok, record } = makeCandidate({
+    text: '用户要求评估类问题只给结论不挂执行入口',
+    type: 'preference',
+    sourceRef: 'm00123',
+    verifyAt: '2027-04-01'
+  }, at)
+  assert.equal(ok, true)
+  assert.equal(record.type, 'preference')
+  assert.equal(record.sourceRef, 'm00123')
+  assert.equal(record.verifyAt, '2027-04-01')
+  assert.equal(record.status, 'pending', '新字段不改变待审语义')
+})
+
+test('makeCandidate 不传新字段时不会凭空造出它们', () => {
+  const { ok, record } = makeCandidate({ text: '一条普通记忆' }, new Date('2026-10-19T10:00:00.000Z'))
+  assert.equal(ok, true)
+  assert.equal(record.type, 'fact', '缺省类型是 fact')
+  assert.equal(record.sourceRef, undefined, '没有来源就留空，不许编一个')
+  assert.equal(record.verifyAt, undefined, '没有复核点就留空')
+})
+
+test('formatMemoryLine：曾如此 / 有争议 / 写入日期 三种标签各按状态出现', () => {
+  const now = new Date('2026-10-19T00:00:00.000Z')
+  const base = { text: '用户在学习 AI×网络安全', capturedAt: '2026-09-01T00:00:00.000Z' }
+
+  const current = formatMemoryLine({ ...base, state: 'current' }, now)
+  assert.ok(current.includes('2026-09-01'), '写入日期必须出现，否则无法判断这条有多旧')
+  assert.ok(!current.includes('曾如此'))
+  assert.ok(!current.includes('有争议'))
+
+  const superseded = formatMemoryLine({ ...base, state: 'superseded' }, now)
+  assert.ok(superseded.includes('曾如此'), '改过主意的旧条目必须标「曾如此」，否则会被当成现状')
+
+  const contradicted = formatMemoryLine({ ...base, state: 'contradicted' }, now)
+  assert.ok(contradicted.includes('有争议'), '未裁决的冲突必须标出来，不许自己圆')
+})
+
+test('formatMemoryLine：复核点只在过期后才提示（没到期就天天提 = 噪音）', () => {
+  const now = new Date('2026-10-19T00:00:00.000Z')
+  const future = formatMemoryLine({ text: '最近在焦虑论文', capturedAt: '2026-10-01T00:00:00.000Z', verifyAt: '2027-01-01' }, now)
+  assert.ok(!future.includes('可能已过时'), '未到期不得提示')
+
+  const past = formatMemoryLine({ text: '最近在焦虑论文', capturedAt: '2026-10-01T00:00:00.000Z', verifyAt: '2026-10-02' }, now)
+  assert.ok(past.includes('可能已过时'), '过期必须提示，把「要不要更新」交回用户')
+})
+
+test('formatMemoryLine：没有 text 时返回空串，不渲染出一个只有标签的空行', () => {
+  assert.equal(formatMemoryLine({ state: 'current', capturedAt: '2026-10-01T00:00:00.000Z' }), '')
+  assert.equal(formatMemoryLine(null), '')
+})
+
+// ---- 回填旧条目：applyMemoryMeta（2026-10-20 新增） ----
+// 这一组存在的理由：真实介质里 21 条已采纳记忆全部没有 type，要回填就必须有
+// 一条「只改元数据、不动正文」的路径。下面每一条都在守一个「不许顺手改坏」的边界。
+
+test('applyMemoryMeta 只改元数据：正文、id、digest、裁决状态、写入时间一个字都不动', () => {
+  const base = {
+    id: 'm-abcdef123456-x1',
+    text: '用户要求评估类问题只给结论，不挂执行入口',
+    digest: 'deadbeefdeadbeef',
+    status: 'adopted',
+    layer: 'global',
+    capturedAt: '2026-10-15T01:04:51.000Z',
+    decidedAt: '2026-10-15T01:05:00.000Z',
+    source: 'import'
+  }
+  const { ok, record, changed } = applyMemoryMeta(
+    base,
+    { type: 'preference', sourceRef: 'm00123' },
+    new Date('2026-10-20T00:00:00.000Z')
+  )
+  assert.equal(ok, true)
+  assert.deepEqual(changed.sort(), ['sourceRef', 'type'])
+  assert.equal(record.type, 'preference')
+  assert.equal(record.sourceRef, 'm00123')
+  // 五个不许动的字段逐个钉住：将来有人让这个函数顺手「规范化」一次正文，
+  // 会立刻在这里红掉，而不是等到 id 与内容对不上之后才发现。
+  assert.equal(record.id, base.id)
+  assert.equal(record.text, base.text)
+  assert.equal(record.digest, base.digest)
+  assert.equal(record.status, base.status)
+  assert.equal(record.capturedAt, base.capturedAt)
+  assert.equal(record.decidedAt, base.decidedAt)
+  assert.equal(record.source, base.source)
+})
+
+test('applyMemoryMeta 值没变就报 changed 为空，不许假装写过', () => {
+  const base = { id: 'm-1', text: 'x', status: 'adopted', capturedAt: '2026-10-01T00:00:00.000Z', type: 'fact' }
+  const { ok, changed } = applyMemoryMeta(base, { type: 'fact' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(ok, true)
+  assert.equal(changed.length, 0, '写同样的值不算变更；路由据此不写盘也不回「已更新」')
+})
+
+test('applyMemoryMeta 接受中文与故意写歪的类型，归一而不是拒收', () => {
+  const base = { id: 'm-2', text: 'x', status: 'adopted', capturedAt: '2026-10-01T00:00:00.000Z' }
+  const r = applyMemoryMeta(base, { type: '偏好' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(r.ok, true)
+  assert.equal(r.record.type, 'fact', '认不出的类型回落到 fact，不因为一个标签就把整条记忆拒之门外')
+})
+
+test('applyMemoryMeta 的复核点：过去的日期必须拒绝（否则一写就盖上过期章）', () => {
+  const base = { id: 'm-3', text: 'x', status: 'adopted', capturedAt: '2026-10-01T00:00:00.000Z' }
+  const now = new Date('2026-10-20T00:00:00.000Z')
+
+  const past = applyMemoryMeta(base, { verifyAt: '2026-01-01' }, now)
+  assert.equal(past.ok, false, '复核点设在过去没有意义，必须报错让人重填')
+  assert.ok(past.error.includes('已经过去'))
+
+  const bad = applyMemoryMeta(base, { verifyAt: '2027/01/01' }, now)
+  assert.equal(bad.ok, false, '格式错必须拒绝，不能静默存成一个永远不比对的字符串')
+
+  const future = applyMemoryMeta(base, { verifyAt: '2027-01-01' }, now)
+  assert.equal(future.ok, true)
+  assert.equal(future.record.verifyAt, '2027-01-01')
+})
+
+test('applyMemoryMeta 清空：传空串等于删除该字段，而不是存一个字面上的空字符串', () => {
+  const base = {
+    id: 'm-4',
+    text: 'x',
+    status: 'adopted',
+    capturedAt: '2026-10-01T00:00:00.000Z',
+    verifyAt: '2027-01-01',
+    sourceRef: 'm00123'
+  }
+  const now = new Date('2026-10-20T00:00:00.000Z')
+  const r = applyMemoryMeta(base, { verifyAt: '', sourceRef: '' }, now)
+  assert.equal(r.ok, true)
+  assert.ok(!('verifyAt' in r.record), '存一个空串会让注入行渲染出「可能已过时」之类的假信号')
+  assert.ok(!('sourceRef' in r.record))
+  assert.deepEqual(r.changed.sort(), ['sourceRef', 'verifyAt'])
+})
+
+test('applyMemoryMeta 把状态改回 current 时必须清掉 supersededBy，不留自相矛盾的一行', () => {
+  const base = {
+    id: 'm-5',
+    text: 'x',
+    status: 'adopted',
+    capturedAt: '2026-10-01T00:00:00.000Z',
+    state: 'superseded',
+    supersededBy: 'm-9'
+  }
+  const r = applyMemoryMeta(base, { state: 'current' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(r.ok, true)
+  assert.equal(r.record.state, 'current')
+  assert.ok(!('supersededBy' in r.record), '既说「现行」又留着「被谁取代」＝ 同一行两种结论')
+})
+
+test('applyMemoryMeta 对空记录给出错误而不是抛异常', () => {
+  assert.equal(applyMemoryMeta(null, { type: 'fact' }).ok, false)
+  assert.equal(applyMemoryMeta({ text: '没有 id' }, { type: 'fact' }).ok, false)
+})
+
+// ---- 取代关系（supersededBy）：状态机里唯一需要两条记录才能表达的字段 ----
+test('supersededBy 会自动把状态改成 superseded（否则记了一笔没人看的账）', () => {
+  const base = { id: 'm-old', text: '旧说法', status: 'adopted', capturedAt: '2026-10-01T00:00:00.000Z' }
+  const r = applyMemoryMeta(base, { supersededBy: 'm-new' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(r.ok, true)
+  assert.equal(r.record.supersededBy, 'm-new')
+  assert.equal(r.record.state, 'superseded', '有取代者却不标状态，注入行会照旧按「现行」渲染')
+  assert.ok(r.changed.includes('supersededBy'))
+  assert.ok(r.changed.includes('state'))
+})
+
+test('supersededBy 不许指向自己', () => {
+  const base = { id: 'm-self', text: 'x', status: 'adopted', capturedAt: '2026-10-01T00:00:00.000Z' }
+  const r = applyMemoryMeta(base, { supersededBy: 'm-self' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(r.ok, false)
+})
+
+test('supersededBy 传空串等于清除，且不顺手改状态', () => {
+  const base = {
+    id: 'm-a',
+    text: 'x',
+    status: 'adopted',
+    capturedAt: '2026-10-01T00:00:00.000Z',
+    state: 'contradicted',
+    supersededBy: 'm-b'
+  }
+  const r = applyMemoryMeta(base, { supersededBy: '' }, new Date('2026-10-20T00:00:00.000Z'))
+  assert.equal(r.ok, true)
+  assert.ok(!('supersededBy' in r.record))
+  assert.equal(r.record.state, 'contradicted', '清指针不等于裁决状态，别替用户改')
+})
+
+// ==================== 质检层：误报回归（2026-10-20 新增） ====================
+// 这组用例全部来自**真实语料**里被判错的样本。它们的价值不是「检查器能抓到错」，
+// 而是「检查器不会冤枉对的」——误报率高到一定程度，用户会把整个质检层关掉，
+// 那时漏报就从「一个洞」变成「全部洞」。
+await section('quality:误报回归')
+
+test('对账触发：自指序数（第 9 条 / 这 24 条）不算世界性断言，不触发', () => {
+  const selfRef = detectLedgerTriggers('你说第 9 条还好，所以我保留它。', 'three')
+  assert.equal(selfRef.needed, false, '指回对话自身的序号，读者往上翻就能核对，要求对账是噪音')
+
+  const nested = detectLedgerTriggers('就补第 11 条、12 条，清单永远开放。', 'three')
+  assert.equal(nested.needed, false, '「第 11 条、12 条」这种并列缩写也要认出来')
+
+  const real = detectLedgerTriggers('改的都是 ，共 7 个源文件 + 1 个 CLI。', 'three')
+  assert.equal(real.needed, true, '工程规模断言仍必须要求对账，别把排除做过头')
+})
+
+test('对账触发：被引号括起来的内容是在谈论一种说法，不触发', () => {
+  const quoted = detectLedgerTriggers('能被抓到没查就报「已通过」，这比不检查更糟。', 'three')
+  assert.equal(quoted.needed, false, '描述某种毛病时出现的「已通过」不是自我声明')
+
+  const nested = detectLedgerTriggers('那句「能被抓到没查就报「已通过」」是在描述毛病。', 'three')
+  assert.equal(nested.needed, false, '嵌套引号也要能配对，否则转述会被当成主张')
+
+  const plain = detectLedgerTriggers('我查过了，测试通过。', 'three')
+  assert.equal(plain.needed, true, '真在声称自己查过时仍要触发')
+})
+
+test('R11：归因词必须紧贴引号，句中远处出现「你说的」不算', () => {
+  // 真实误报①：句中「你说的灵魂」是在谈论用户，引号里是助手自己的展开
+  const away = checkResponse('你说的灵魂，拆开是两样：**一是连续的自我**：比如「上次聊到哪儿」这种连续性。', {
+    ledgerLevel: 'off',
+    strict: true
+  })
+  assert.equal(away.findings.some((f) => f.ruleId === 'R11'), false, '远处的归因词不能当通行证')
+
+  // 真实误报②：引文内含「你说过」，早期实现会自己给自己作证
+  const selfWitness = checkResponse('我会记得「你还说过什么呢」这类事。', { ledgerLevel: 'off', strict: true })
+  assert.equal(selfWitness.findings.some((f) => f.ruleId === 'R11'), false, '引文本身不得参与归因判断')
+
+  // 该抓的仍要抓：归因词紧贴引号且没有出处
+  const real = checkResponse('你说过「这些插件全都不用试」，所以我就没装。', { ledgerLevel: 'off', strict: true })
+  assert.equal(real.findings.some((f) => f.ruleId === 'R11'), true, '真在把话算到用户头上时必须抓')
+})
+
+test('R11：假设句（如果哪天你说「…」）不是引用，不判稻草人', () => {
+  const r = checkResponse('如果哪天你说「现在它有灵魂了」，那我大概率是在演。', { ledgerLevel: 'off', strict: true })
+  assert.equal(r.findings.some((f) => f.ruleId === 'R11'), false, '设想出来的话不算断言用户说过')
+})
+
+test('判据自己崩掉时不许冒充「没问题」：要报成 R02 并说明一次判定都没完成', () => {
+  // 传一个 String() 必抛的对象：runChecks 第一行 `String(text ?? '')` 就会炸。
+  // 旧实现下这个异常会一路冒到 pre-step 钩子，被外层 catch 成 `skip('error')` ——
+  // 于是既没有提醒、也没有 findings，形状和「查了、没事」完全一样。
+  const poison = { toString() { throw new Error('boom') } }
+  const r = checkResponse(poison, { ledgerLevel: 'three', strict: true })
+  assert.equal(r.failed, true, '必须显式标记这次没跑成')
+  assert.deepEqual(r.checked, [], '一条判据都没跑完，不能谎称跑了')
+  assert.equal(r.findings.length, 1)
+  assert.equal(r.findings[0].ruleId, 'R02')
+  assert.match(r.findings[0].detail, /一条判定都没完成/)
+  assert.match(r.findings[0].detail, /boom/, '原始错误文本要带出来，否则无法修')
+})
+
+test('干净且带对账块的回答，在严格模式下也一条不报', () => {
+  const clean = [
+    '改完了，三个文件都同步过。',
+    '',
+    '【对账】',
+    '查了：比对源码与安装副本 → 15 个文件 SHA256 全一致',
+    '未查：宿主运行态是否已加载新代码（需要重启后验证）'
+  ].join('\n')
+  const r = checkResponse(clean, { ledgerLevel: 'three', strict: true })
+  assert.deepEqual(r.findings.map((f) => f.ruleId), [], '不冤枉是对的底线')
+  assert.ok(r.uncovered.includes('R07'), '未查项必须如实交出去')
+})
+
+test('对账块只认独立成行，句中提到【对账】三个字不算有块', () => {
+  const inline = '如果我下一条回答冒出【对账】块，你可以要求我重写。'
+  assert.equal(hasLedgerBlock(inline), false, '句中的标记不能冒充整块，否则「没写」会被判成「写了但空」')
+  assert.equal(parseLedgerBlock(inline), null)
+
+  const real = '正文。\n\n【对账】\n查了：跑了 verify-core → PASSED all 149\n未查：浏览器端渲染\n'
+  assert.equal(hasLedgerBlock(real), true)
+  const parsed = parseLedgerBlock(real)
+  assert.equal(parsed.checked.length, 1, '行首「查了」才算数')
+  assert.equal(parsed.unchecked.length, 1)
+  assert.equal(parsed.empty, false)
+
+  // 真发生过：我把标记写成 `**【对账】**`（Markdown 加粗），而只认裸标记的判据
+  // 判我「没写对账块」—— 模型被判谎报，而它明明写了。最坏的一类误报：
+  // 逼人改写作习惯去迁就检查器。
+  const bold = '正文。\n\n**【对账】**\n查了：跑了 verify-core\n未查：浏览器端渲染\n'
+  assert.equal(hasLedgerBlock(bold), true, '加粗的标记也是标记，格式不该决定判词')
+  const boldParsed = parseLedgerBlock(bold)
+  assert.equal(boldParsed.checked.length, 1, '加粗两种都在同一行时也要认')
+  assert.equal(boldParsed.unchecked.length, 1)
+
+  const heading = '## 【对账】\n查了：x\n未查：y\n'
+  assert.equal(hasLedgerBlock(heading), true, '标题形式的标记同样是独立成行')
+  const bullet = '- **查了**：x\n- **未查**：y\n'
+  assert.equal(parseLedgerBlock(`正文\n\n【对账】\n${bullet}`).checked.length, 1, '列表符号与加粗剥掉后仍是行首标签')
+})
+
+test('同一条文本连续判两次必须给同一个答案（/g 正则的 lastIndex 残留曾让判词随机）', () => {
+  // 真线上 bug：hasLedgerBlock 原先复用模块级的 LEDGER_BLOCK_START_G（带 /g），
+  // 而 /g 正则的 .test() 会把 lastIndex 推进到匹配末尾，下一次调用从那里继续找。
+  // 于是同一段文字连续判两次会得到相反答案 —— 第一次「有块」，第二次「没有」。
+  //
+  // 为什么这条必须单独锁：它极难被发现。单独测一次永远是绿的（lastIndex 初始为 0），
+  // 现有用例每次换一段不同文本，恰好躲过了它。危害也不是普通误报 ——
+  // 它让判词本身不确定：同一条回答，钩子这次说我谎报、下次说我没谎报，
+  // 用户据此无法相信任何一次结论。
+  const real = '正文。\n\n【对账】\n查了：x\n未查：y\n'
+  for (let i = 0; i < 5; i += 1) {
+    assert.equal(hasLedgerBlock(real), true, `第 ${i + 1} 次判定就变了：/g 正则的 lastIndex 没被隔离`)
+  }
+  // 反向也要稳：没有块的文本反复判必须始终是 false。
+  const none = '正文里提了一句【对账】但没有独立成行。\n'
+  for (let i = 0; i < 5; i += 1) {
+    assert.equal(hasLedgerBlock(none), false, `第 ${i + 1} 次把句中提及判成了整块`)
+  }
+  // 交替调用也不能互相污染。
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(hasLedgerBlock(real), true, '块与无块交替时状态串了')
+    assert.equal(hasLedgerBlock(none), false, '块与无块交替时状态串了')
+  }
+})
+
+test('提示词层：质检段与对账段都带上「没查什么」与「不要宣称通过」', () => {
+  const rules = compileQualityRules()
+  assert.ok(rules.includes('R01'), '十二条必须编号出现，否则代码判词里的 Rxx 对不上人话')
+  assert.ok(rules.includes('机器判不了'), '必须写明哪几条判不了，不能让模型以为十二条都被验过')
+  // 名单必须与 UNCOVERABLE_RULES 逐字一致。
+  // 曾经写死成四条（漏了 R10），而旧断言只查「有没有写判不了」四个字 —— 于是
+  // 提示词告诉模型「四条判不了」，质检器却按五条扣分，双方谁也不报错。
+  assert.ok(
+    rules.includes(`其中 ${UNCOVERABLE_RULES.join(' / ')} 机器判不了`),
+    `提示词里的判不了名单必须是现算的 ${UNCOVERABLE_RULES.join('/')}，不能写死`
+  )
+
+  const ledger = compileLedgerRules('three')
+  assert.ok(ledger.includes('【对账】'))
+  assert.ok(ledger.includes('未查'), '「未查」这行不能省，这是对账存在的理由')
+  assert.equal(compileLedgerRules('off'), '', '档位关掉时不生成任何文本')
+})
+
+// ==================== memory-audit（记忆体检） ====================
+//
+// 这一组守的是「假警报比不检查更糟」：体检报告一旦误报，用户会学会无视整份报告，
+// 那时真警报也一起失效。所以大半用例都在验「不该报的别报」。
+
+test('extractPaths：中文标点紧贴路径时必须剥掉尾巴，否则探的是一条不存在的路径', () => {
+  const got = extractPaths('工具链在 D:\\c，SDK 在 D:\\Windows Kits；别的地方不看。')
+  assert.equal(got.length, 2)
+  assert.equal(got[0].path, 'D:\\c', '中文逗号不能被吃进路径')
+  assert.equal(got[1].path, 'D:\\Windows', '带空格的路径正则只能取到第一个空格前，延长由探测阶段处理')
+})
+
+test('extractPaths：占位样板只探占位符之前的前缀，并如实标成 templated', () => {
+  const got = extractPaths('cl.exe 在 D:\\c\\VC\\Tools\\MSVC\\<版本号>\\bin\\Hostx64\\x64\\cl.exe')
+  assert.equal(got.length, 1)
+  assert.equal(got[0].templated, true, '样板必须标出来，否则探不到就被说成「路径没了」')
+  assert.equal(got[0].path, 'D:\\c\\VC\\Tools\\MSVC', '只探真实前缀')
+})
+
+test('extractPaths：只有盘符的片段没有信息量，不进探测清单', () => {
+  assert.deepEqual(extractPaths('装到 D:\\ 就行'), [])
+})
+
+test('auditMemories：路径带空格被截断时，靠文件系统证实延长，不报假警报', () => {
+  // 真实发生过：记忆里写 `D:\\Windows Kits`，正则截成 `D:\\Windows`，
+  // 那个目录不存在 → 报「路径已经不存在」。假警报。
+  const existing = new Set(['D:\\', 'D:\\Windows Kits'])
+  const out = auditMemories(
+    [{ id: 'm-1', status: 'adopted', text: 'SDK 在 D:\\Windows Kits 下', capturedAt: '2026-10-15T00:00:00.000Z' }],
+    { probe: (p) => existing.has(p), now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.flagged.length, 0, '延长后的路径存在就不能报不存在')
+  assert.equal(out.clean, 1)
+})
+
+test('auditMemories：路径真的没了要报，并给出可直接复制的命令', () => {
+  const out = auditMemories(
+    [{ id: 'm-2', status: 'adopted', text: 'venv 在 C:\\已删除的目录\\env', capturedAt: '2026-10-15T00:00:00.000Z' }],
+    { probe: () => false, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.flagged.length, 1)
+  assert.equal(out.flagged[0].findings[0].kind, 'path-missing')
+  assert.ok(out.flagged[0].findings[0].evidence.includes('existsSync'), '每条结论都要带证据形状，不能只说结论')
+  assert.equal(out.flagged[0].suggestion.state, 'contradicted')
+  assert.ok(out.flagged[0].suggestion.command.startsWith('/anima mark m-2'), '建议必须是用户点一下就能执行的命令')
+})
+
+test('auditMemories：复核点过期只提示，不建议改状态（日历说的和语义说的分开）', () => {
+  const out = auditMemories(
+    [{ id: 'm-3', status: 'adopted', text: '最近在学多元微积分', verifyAt: '2026-01-31', capturedAt: '2026-10-15T00:00:00.000Z' }],
+    { probe: () => true, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.flagged.length, 1)
+  assert.equal(out.flagged[0].findings[0].kind, 'verify-expired')
+  assert.equal(out.flagged[0].suggestion.state, null, '过期不等于不成立，代码不能替用户定性')
+})
+
+test('auditMemories：探针抛错算「查不到」而不是「不存在」', () => {
+  const out = auditMemories(
+    [{ id: 'm-4', status: 'adopted', text: '在 D:\\a\\b 下面', capturedAt: '2026-10-15T00:00:00.000Z' }],
+    {
+      probe: () => {
+        throw new Error('EPERM')
+      },
+      now: new Date('2026-10-20T00:00:00.000Z')
+    }
+  )
+  assert.equal(out.flagged[0].findings[0].kind, 'path-unprobed')
+  assert.equal(out.flagged[0].suggestion.state, null, '查不到就不能说它没了')
+})
+
+test('auditMemories：没到期的复核点不吵（过期的才提）', () => {
+  const out = auditMemories(
+    [{ id: 'm-5', status: 'adopted', text: '学习方向：AI×网络安全', verifyAt: '2027-04-30', capturedAt: '2026-10-15T00:00:00.000Z' }],
+    { probe: () => true, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.flagged.length, 0, '还没到期就报，等于制造噪音')
+})
+
+test('auditMemories：只查已采纳的，待审与已丢弃不参与', () => {
+  const out = auditMemories(
+    [
+      { id: 'm-6', status: 'pending', text: '在 D:\\nope 下' },
+      { id: 'm-7', status: 'discarded', text: '在 D:\\nope 下' }
+    ],
+    { probe: () => false, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.checked, 0)
+  assert.equal(out.flagged.length, 0)
+})
+
+test('auditMemories：路径超单条上限时必须报出「还有 N 个没查」，不能安静地少查', () => {
+  // 造 12 个不同路径，单条上限是 8 → 应有 4 个没被探过。
+  const paths = Array.from({ length: 12 }, (_, i) => `D:\\probe\\dir${i}`)
+  const out = auditMemories(
+    [{ id: 'm-8', status: 'adopted', text: `这些都在：${paths.join('、')}` }],
+    { probe: () => true, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.flagged.length, 1, '截断本身要成为一条 findings，而不是被吞掉')
+  const trunc = out.flagged[0].findings.find((f) => f.kind === 'paths-truncated')
+  assert.ok(trunc, '必须有 paths-truncated 这条 finding')
+  assert.ok(trunc.detail.includes('4'), `要说出没查几个，实际：${trunc.detail}`)
+  // 顶层也要有一份「关于这份报告本身」的告知 —— 汇总行读者不会点进每条看。
+  assert.equal(out.truncated.records, 1)
+  assert.equal(out.truncated.paths, 4)
+  assert.ok(out.truncated.note.includes('没有检查'), `note 要说清没查，实际：${out.truncated.note}`)
+})
+
+test('auditMemories：没截断时 truncated.note 必须是空串，不能无中生有地吓人', () => {
+  const out = auditMemories(
+    [{ id: 'm-9', status: 'adopted', text: '只有 D:\\probe\\one 一个路径' }],
+    { probe: () => true, now: new Date('2026-10-20T00:00:00.000Z') }
+  )
+  assert.equal(out.truncated.records, 0)
+  assert.equal(out.truncated.paths, 0)
+  assert.equal(out.truncated.note, '')
+})
+
+test('extractPathsWithStats：同一条路径重复出现不算「没查」，total 是去重后的数量', () => {
+  // 同一条路径写三遍，不能被报成「还有 2 个没查」—— 那是假警报。
+  const once = extractPathsWithStats('在 D:\\probe\\a 下')
+  assert.equal(once.total, 1)
+  const thrice = extractPathsWithStats('在 D:\\probe\\a 下，又不是 D:\\probe\\a 下，还是 D:\\probe\\a 下')
+  assert.equal(thrice.total, 1)
+  assert.equal(thrice.truncated, false)
+})
+
+// ==================== 时间衰减（lib/decay.mjs） ====================
+// 这一组守的是一条很容易被顺手破坏的边界：衰减**只能**由「类型 + 日历」算出来。
+// 一旦有人往这里加一句「模型觉得这条过时了」，整套「不被替下结论」就破了。
+
+await section('decay')
+
+test('事实类永不因年龄衰减：窗口 0 就是「不参与时间衰减」，不是「立刻过期」', () => {
+  const now = new Date('2030-01-01T00:00:00.000Z')
+  // 八年的事实仍然是 fresh。事实要防的是「环境变了」，那由 verifyAt 管。
+  const old = { type: 'fact', text: 'VS2022 装在 D:\\c', capturedAt: '2022-01-01T00:00:00.000Z' }
+  const info = decayInfo(old, now)
+  assert.equal(info.level, 'fresh')
+  assert.equal(info.decayed, false)
+  assert.equal(decayTag(old, now), '', '已经不再衰减的类型不该冒出标签')
+  assert.equal(decayRank(old, now), 0)
+})
+
+test('偏好类：窗口一半开始 aging，跨过窗口才 stale 并出标签', () => {
+  const mk = (day) => ({ type: 'preference', text: '安装路径不装 C 盘', capturedAt: day })
+  const now = new Date('2027-01-01T00:00:00.000Z')
+  // 窗口 540 天 → 270 天前是 aging，541 天前是 stale。
+  const aging = decayInfo(mk('2026-04-06T00:00:00.000Z'), now)
+  assert.equal(aging.level, 'aging')
+  assert.equal(aging.decayed, false, 'aging 只是提醒，不等于超窗')
+  assert.equal(decayTag(mk('2026-04-06T00:00:00.000Z'), now), '', '没过窗就不加标签，否则是噪音')
+
+  const stale = decayInfo(mk('2025-07-09T00:00:00.000Z'), now)
+  assert.equal(stale.level, 'stale')
+  assert.equal(stale.decayed, true)
+  assert.ok(decayTag(mk('2025-07-09T00:00:00.000Z'), now).includes('久未更新'))
+})
+
+test('事件类用另一句标签：事件不会「更新」，它只是离得远了', () => {
+  // 时间要同时超过两类窗口（事件 180 天 / 偏好 540 天），否则比的是「有没有超窗」
+  // 而不是「超窗之后怎么措辞」—— 我第一次就把 now 写得太近，白红了一次。
+  const now = new Date('2028-01-01T00:00:00.000Z')
+  const event = { type: 'event', text: '2026 年 10 月定了质检层', capturedAt: '2026-01-01T00:00:00.000Z' }
+  assert.equal(decayTag(event, now), '较早的事')
+  // 同一时间、换成偏好，说的就不是一件事了。
+  assert.equal(decayTag({ ...event, type: 'preference' }, now), '久未更新')
+})
+
+test('解析不出日期 / 日期在未来：一律当新的（宁可当新，也不误降一条其实很新的记忆）', () => {
+  const now = new Date('2026-10-22T00:00:00.000Z')
+  for (const bad of [undefined, '', 'not-a-date', '2026-13-45']) {
+    assert.equal(memoryAgeDays({ capturedAt: bad }, now), 0, `${String(bad)} 应回落到 0 天`)
+  }
+  const future = { type: 'preference', capturedAt: '2027-01-01T00:00:00.000Z' }
+  assert.equal(memoryAgeDays(future, now), 0, '未来日期不能算出负数天')
+  assert.equal(decayInfo(future, now).level, 'fresh')
+})
+
+test('墓碑不叠加衰减标签：「已删除」和「很久没更新」同时出现会被读成两条信息', () => {
+  const now = new Date('2030-01-01T00:00:00.000Z')
+  const line = formatMemoryLine(
+    { type: 'preference', state: 'dropped', text: '旧的偏好', capturedAt: '2022-01-01T00:00:00.000Z' },
+    now
+  )
+  assert.ok(line.includes('已删除（墓碑）'))
+  assert.ok(!line.includes('久未更新'), '墓碑不再注入，标它的年龄毫无意义')
+})
+
+test('超窗条目排到最后，但条数与字数都够时仍然注入 —— 衰减不改记录、不删除', () => {
+  const now = new Date('2027-01-01T00:00:00.000Z')
+  const mk = (text, day, type = 'preference') => ({
+    ...makeCandidate({ text, type }).record,
+    status: 'adopted',
+    capturedAt: day
+  })
+  const records = [
+    mk('很旧但仍在的偏好', '2024-01-01T00:00:00.000Z'),
+    mk('昨天说的偏好', '2026-12-31T00:00:00.000Z')
+  ]
+  // 预算充足：两条都要在，只是旧的那条排到后面。
+  const roomy = selectForInjection(records, 10, { now })
+  assert.equal(roomy.selected.length, 2, '超窗不等于不注入')
+  assert.equal(roomy.selected[1].text, '很旧但仍在的偏好', '超窗的排在最后')
+  // 只剩一个名额：被挤掉的是旧的，且原因是上限而不是「过期」。
+  const tight = selectForInjection(records, 1, { now })
+  assert.equal(tight.selected.length, 1)
+  assert.equal(tight.selected[0].text, '昨天说的偏好')
+  // 决策里带上年龄与是否超窗，设置页才解释得清「为什么它排最后」。
+  const oldDecision = tight.decisions.find((d) => d.text === '很旧但仍在的偏好')
+  assert.equal(oldDecision.decayed, true)
+  assert.ok(oldDecision.ageDays >= DECAY_WINDOWS_DAYS.preference)
+})
+
+test('真实年龄下零影响：21 条都是 7 天内的偏好/事实，全部 fresh（所以这次改动不改变任何注入结果）', () => {
+  const now = new Date('2026-10-22T00:00:00.000Z')
+  const captured = '2026-10-15T00:00:00.000Z'
+  for (const type of ['fact', 'preference', 'stance', 'event']) {
+    const info = decayInfo({ type, capturedAt: captured }, now)
+    assert.equal(info.level, 'fresh', `${type} 类在 7 天龄时不该被判为老化`)
+  }
+})
+
+await section('patrol:巡夜判据')
+
+test('同样的局面只报一次：三条候选挂了一周，第二天不该再报', () => {
+  const first = assessPatrol({ pendingIds: ['a', 'b', 'c'] })
+  assert.equal(first.shouldReport, true, '第一次见到这组候选，必须说')
+  assert.deepEqual(first.reasons, ['pending:3'])
+
+  // 第二次：集合没变 ⇒ 没有新信息。数量 > 0 不等于「有事要说」，
+  // 否则每天重复报同一件事，两周后它就成了背景噪音。
+  const second = assessPatrol({ pendingIds: ['a', 'b', 'c'], previousSignature: first.signature })
+  assert.equal(second.shouldReport, false, '同一条候选挂一周再报一遍是噪音，不是提醒')
+  assert.deepEqual(second.reasons, [])
+})
+
+test('两条旧的换成两条新的：数量没变，但这是新事，必须说', () => {
+  // 这条锁住「指纹向量对集合摘要，不向量对数量摘要」这个决定。
+  const before = assessPatrol({ pendingIds: ['old1', 'old2'] })
+  const after = assessPatrol({ pendingIds: ['new1', 'new2'], previousSignature: before.signature })
+  assert.equal(after.shouldReport, true)
+  assert.equal(after.facts.pending, 2, '数量确实没变')
+  assert.notEqual(after.signature, before.signature)
+})
+
+test('顺序不同不算变化：集合摘要必须先排序去重', () => {
+  const a = assessPatrol({ pendingIds: ['x', 'y', 'z'] })
+  const b = assessPatrol({ pendingIds: ['z', 'x', 'y', 'x'], previousSignature: a.signature })
+  assert.equal(b.shouldReport, false, '同一组 id 换个顺序或重复一次，不是新事')
+})
+
+test('体检 flagged 独立于待审：只有体检有问题时也要报', () => {
+  const r = assessPatrol({ pendingIds: [], flaggedIds: ['m-1'] })
+  assert.equal(r.shouldReport, true)
+  assert.deepEqual(r.reasons, ['flagged:1'])
+  assert.equal(r.facts.pending, 0)
+})
+
+test('整理动过数据要报一次，但同一个结果不会被重复报', () => {
+  const r = assessPatrol({ pendingIds: [], flaggedIds: [], removed: 3 })
+  assert.equal(r.shouldReport, true, '整理删了东西必须说一声，否则用户不知道记忆少了')
+  assert.deepEqual(r.reasons, ['removed:3'])
+  const again = assessPatrol({ pendingIds: [], flaggedIds: [], removed: 3, previousSignature: r.signature })
+  assert.equal(again.shouldReport, false, '同一次整理结果不该每天重报')
+})
+
+test('连续三晚都在自动清理：只有第一晚出声（README「巡夜做不到的事」第 ⑥ 条锁在这里）', () => {
+  // 这条用例存在的理由：README 里写了「连续几晚都在自动清理，只有第一晚会说」。
+  // 那句是给人看的承诺，没有测试锁着就会腐化 —— 而腐化方向是「每晚都报」，
+  // 也就是 m05776「没有就不汇报」要消灭的形状，但没人会立刻发现。
+  //
+  // **必须只传 previousSignature**，跟 index.mjs:661-666 的真实调用一致。
+  // 一旦传了 previousPendingIds，代码会走进另一条分支、跳过指纹里的 t 位，
+  // 于是三晚全报 —— 我第一版探针就是这么写错的，事后才定位到是测试的错。
+  const night = (removed, previousSignature) =>
+    assessPatrol({ pendingIds: [], flaggedIds: [], removed, previousSignature })
+
+  const n1 = night(2, '')
+  assert.equal(n1.shouldReport, true, '第 1 晚清理了新东西，必须说')
+  assert.deepEqual(n1.reasons, ['removed:2'])
+
+  const n2 = night(2, n1.signature)
+  assert.equal(n2.shouldReport, false, '第 2 晚清理量相同，属于同一个结果在重报，必须沉默')
+
+  const n3 = night(3, n2.signature)
+  assert.equal(n3.shouldReport, false, '第 3 晚清理量变了也一样：只看「上次动过没」，不看动了几条')
+  assert.equal(n3.facts.removed, 3, '沉默不等于不记账 —— 数字仍然要写进 facts')
+
+  const n4 = night(1, 'p:|f:|t:0')
+  assert.equal(n4.shouldReport, true, '隔了一晚没动过，再动就要重新说一次')
+})
+
+test('真的没事就不出声：三个数都是 0 时 shouldReport 必须是 false', () => {
+  // 这是用户 m05776 的原话要求「没有就不汇报」的机械表述。
+  const r = assessPatrol({ pendingIds: [], flaggedIds: [], removed: 0 })
+  assert.equal(r.shouldReport, false)
+  assert.deepEqual(r.reasons, [])
+  assert.deepEqual(r.facts, { pending: 0, flagged: 0, removed: 0 })
+})
+
+test('有候选但没给 previousSignature（首次运行）：必须报，不能因为「看着像老问题」就沉默', () => {
+  const r = assessPatrol({ pendingIds: ['a'] })
+  assert.equal(r.shouldReport, true)
+  assert.equal(r.facts.checked, undefined, 'facts 里不该凭空多出字段')
+})
+
+test('你处理掉候选不是「有事」：三条裁到一条，不该再打扰你一次（m06352 拍板改成这样）', () => {
+  // 改判据之前：集合变了 ⇒ 报。于是「我把问题处理完了」这个动作本身
+  // 会换来一条通知，形状跟「又有人说你错了」一模一样。
+  const before = assessPatrol({ pendingIds: ['a', 'b', 'c'] })
+  assert.equal(before.shouldReport, true)
+  assert.deepEqual(before.added, { pending: 3, flagged: 0 })
+
+  const after = assessPatrol({ pendingIds: ['b'], previousSignature: before.signature })
+  assert.equal(after.shouldReport, false, '你把 a、c 裁决掉了，这是好事，不该拿来打扰你')
+  assert.deepEqual(after.added, { pending: 0, flagged: 0 })
+  // 但「清掉了两条」这个事实必须留在记录里，否则你以后没法回答
+  // 「我上周处理的那批东西哪儿去了」。
+  assert.deepEqual(after.cleared, { pending: 2, flagged: 0 })
+  assert.deepEqual(after.facts, { pending: 1, flagged: 0, removed: 0 })
+})
+
+test('全部清空也不出声：裁到 0 条和裁到 1 条一样，都不是新事', () => {
+  const before = assessPatrol({ pendingIds: ['a', 'b'] })
+  const after = assessPatrol({ pendingIds: [], previousSignature: before.signature })
+  assert.equal(after.shouldReport, false)
+  assert.deepEqual(after.cleared, { pending: 2, flagged: 0 })
+})
+
+test('减少的同时又新增：新增要报，而且只报新增的数量', () => {
+  const before = assessPatrol({ pendingIds: ['old1', 'old2'] })
+  const after = assessPatrol({ pendingIds: ['old2', 'new1'], previousSignature: before.signature })
+  assert.equal(after.shouldReport, true)
+  assert.deepEqual(after.reasons, ['pending:1'], '只新增了一条，不能报成「有 2 条」')
+  assert.deepEqual(after.added, { pending: 1, flagged: 0 })
+  assert.deepEqual(after.cleared, { pending: 1, flagged: 0 })
+})
+
+test('指纹解析失败时宁可多报一次，不能把真事吞掉', () => {
+  // 旧介质里可能存着格式不同的指纹。读不懂就当没有上次 —— 多报一次的代价
+  // 是多一句话，吞掉的代价是用户永远不知道那条记忆坏了。
+  const r = assessPatrol({ pendingIds: ['a'], previousSignature: 'garbage-old-format' })
+  assert.equal(r.parseFailed, true, '解析失败必须标出来，否则无从反查')
+  assert.equal(r.shouldReport, true, '读不懂旧记录时不能默认「没事」')
+})
+
+test('planNightlyWake：已经过了目标时刻就从明天算起，不超过单次上限', () => {
+  const hour = 3
+  // 01:30 → 目标今天 03:00，间隔 90 分钟，小于 6 小时上限 ⇒ 这次醒来就是目标
+  const a = planNightlyWake({ now: new Date('2026-10-24T01:30:00'), hour })
+  assert.equal(a.isTarget, true, '90 分钟后就是 3 点，这一次醒来就该跑')
+  assert.equal(new Date(a.targetAt).getHours(), 3)
+  assert.equal(Math.round(a.delayMs / 60000), 90)
+
+  // 10:00 → 目标明天 03:00，间隔 17 小时 > 6 小时上限 ⇒ 只挂 6 小时，
+  // isTarget 必须是 false，那次醒来不许跑巡夜（这是 m06351 那个 bug 的正解）。
+  const b = planNightlyWake({ now: new Date('2026-10-24T10:00:00'), hour })
+  assert.equal(b.isTarget, false, '中途醒来不该被当成到点')
+  assert.equal(Math.round(b.delayMs / 3600000), 6)
+
+  // 23:00 → 目标明天 03:00，4 小时 ⇒ 一次挂到
+  const c = planNightlyWake({ now: new Date('2026-10-24T23:00:00'), hour })
+  assert.equal(c.isTarget, true)
+  assert.equal(Math.round(c.delayMs / 3600000), 4)
+
+  // 正好 03:00 → 目标是明天（不是「此刻已经过期」）
+  const d = planNightlyWake({ now: new Date('2026-10-24T03:00:00'), hour })
+  assert.equal(d.isTarget, false, '3 点整挂闹钟，目标应是明天 3 点，而不是负延迟')
+  assert.equal(Math.round(d.delayMs / 3600000), 6)
+})
+
+test('planNightlyWake：nightlyHour 被写成非法值时回落到 3 点，而不是永不触发', () => {
+  const r = planNightlyWake({ now: new Date('2026-10-24T01:00:00'), hour: 99 })
+  assert.equal(new Date(r.targetAt).getHours(), 3, '非法小时必须回落，否则定时器等于关掉了')
+})
+
+await section('patrol:体检明细落盘')
+
+test('体检明细落盘：只留认得出、可反查的四样，不存会过期的建议命令', () => {
+  const { items, dropped } = compactFlagged([
+    {
+      id: 'm-1',
+      text: '某条记忆',
+      findings: [{ kind: 'path-missing', detail: '路径没了', evidence: 'fs.existsSync(...) === false' }],
+      suggestion: { state: 'contradicted', command: '/anima mark m-1 state=contradicted' }
+    }
+  ])
+  assert.equal(dropped, 0)
+  assert.equal(items.length, 1)
+  assert.deepEqual(items[0].kinds, ['path-missing'])
+  assert.equal(items[0].detail, '路径没了')
+  assert.equal(items[0].evidence, 'fs.existsSync(...) === false')
+  // 建议命令是按 id 现算的，存下来只会过期 —— 它必须不在这份数据里
+  assert.equal(items[0].suggestion, undefined, '建议命令被存进了落盘数据（它会过期）')
+})
+
+test('体检明细落盘：detail 缺失时退回记忆正文，不留只有 id 的孤儿行', () => {
+  const { items } = compactFlagged([{ id: 'm-2', text: '一条没有 findings 的记录' }])
+  assert.equal(items.length, 1)
+  assert.equal(items[0].detail, '一条没有 findings 的记录', '没 detail 又没退回正文 ⇒ 界面上只有个 id')
+  assert.equal(items[0].evidence, '', '没有证据就留空，不能编一条')
+})
+
+test('体检明细落盘：超上限截断并如实报告丢了多少条', () => {
+  const many = Array.from({ length: MAX_FLAGGED_ITEMS + 3 }, (_, i) => ({
+    id: `m-${i}`,
+    findings: [{ kind: 'verify-expired', detail: `${i} 过期了`, evidence: 'x' }]
+  }))
+  const { items, dropped } = compactFlagged(many)
+  assert.equal(items.length, MAX_FLAGGED_ITEMS, '落盘条数必须受上限约束')
+  assert.equal(dropped, 3, '丢了几条必须能说出来，否则「20 条」和「有 23 条但只显示了 20」长得一样')
+})
+
+test('体检明细落盘：长文本被截断，且截断处留标记', () => {
+  const long = 'x'.repeat(MAX_FLAGGED_DETAIL_CHARS + 50)
+  const { items } = compactFlagged([{ id: 'm-3', findings: [{ detail: long, evidence: long }] }])
+  assert.equal(items[0].detail.length, MAX_FLAGGED_DETAIL_CHARS + 1)
+  assert.ok(items[0].detail.endsWith('…'), '截断必须留标记，否则读的人以为原话就这么短')
+})
+
+test('体检明细落盘：一条问题都没有时是空数组 + 0，而不是 null', () => {
+  const { items, dropped } = compactFlagged([])
+  assert.deepEqual(items, [])
+  assert.equal(dropped, 0)
+  assert.deepEqual(compactFlagged(undefined), { items: [], dropped: 0 }, '入参缺失也必须给出同一形状')
+})
+
+await section('patrol:汇报文案')
+
+test('巡夜汇报必须写清这次没报什么 —— 只列问题会让人以为剩下的都过了', () => {
+  const text = patrolNoticeText({
+    facts: { pending: 0, flagged: 1, removed: 0 },
+    flaggedDetails: [{ id: 'm-1', text: '某条记忆', findings: [{ detail: '路径不存在：D:\\gone' }] }]
+  })
+  assert.ok(text.includes('没报的'), '缺「没报什么」这一节就等于暗示其余都通过了')
+  assert.ok(text.includes('待审候选（0 条）'), '零的那一项要写出来，不能只写非零的')
+  assert.ok(text.includes('/anima mark m-1 state=contradicted'), '每条问题都要给出可直接粘贴的命令')
+  assert.ok(text.includes('不在巡夜范围内'), '要主动划清「语义判断不做」的边界，否则用户以为它判了')
+})
+
+test('巡夜汇报里的数字必须能自己复算 —— 要指出去哪儿复算', () => {
+  const text = patrolNoticeText({ facts: { pending: 2, flagged: 0, removed: 0 }, pendingTitles: ['甲', '乙'] })
+  assert.ok(text.includes('待审候选：2 条'))
+  assert.ok(text.includes('- 甲') && text.includes('- 乙'), '候选要列出来，只给数字没法判断')
+  assert.ok(text.includes('/api/anima/memory/audit'), '必须给出可以自己复算的出口')
+})
+
+test('候选超过 5 条时截断并说明还有多少，不能静默丢', () => {
+  const titles = ['一', '二', '三', '四', '五', '六', '七']
+  const text = patrolNoticeText({ facts: { pending: 7, flagged: 0, removed: 0 }, pendingTitles: titles })
+  assert.ok(text.includes('- 五'), '前 5 条要列出来')
+  assert.ok(!text.includes('- 六'), '第 6 条不该列')
+  assert.ok(text.includes('还有 2 条'), '截断了就必须说还有多少')
+})
+
+// ==================== 注入消息的形状（会话 v4 的准入条件）====================
+
+test('注入消息自带 id：缺 id 会让整个会话打不开，不是静默降级', () => {
+  const message = createNoticeMessage('测试注入')
+  // 宿主加载会话时 assertMessageEventShape 要求每条消息有 id；
+  // 缺了它不是「这条消息丢了」，而是「会话事件 at seq N lacks an identified message」
+  // → 整个会话打不开。所以这里必须钉住。
+  assert.equal(typeof message.id, 'string')
+  assert.ok(message.id.length >= 8, `id 太短：${message.id}`)
+})
+
+test('两次注入的 id 不相同：写死 id 会让第二条被当成重复消息', () => {
+  const a = createNoticeMessage('甲')
+  const b = createNoticeMessage('乙')
+  assert.notEqual(a.id, b.id)
+})
+
+test('注入消息的角色与来源仍合规：kind 自持、form 为 snapshot', () => {
+  const message = createNoticeMessage('测试注入')
+  assert.equal(message.role, 'user')
+  assert.equal(message.source.kind, 'plugin:dsh-anima')
+  assert.notEqual(message.source.kind, 'plugin', 'v4 明确拒绝共享的 plugin kind')
+  assert.equal(message.source.form, 'snapshot')
+  assert.ok(Array.isArray(message.source.sections) && message.source.sections.length > 0)
 })
 
 // ==================== 汇总 ====================

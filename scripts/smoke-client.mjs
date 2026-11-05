@@ -128,18 +128,24 @@ function createRuntime(renderComponent) {
     }
     rendering = true
     let tree
+    let firstFrame = null
     try {
       do {
         rerenderRequested = false
         index = 0
         pendingEffects = []
         tree = renderComponent()
+        // 记下「effect 执行之前」的那棵树。真实 React 里 effect 要等首帧
+        // 绘制之后才跑，所以首帧是用户真正看得见的那一帧；本替身把 effect
+        // 放进循环里立刻执行，若不单独留一份，就永远测不到首帧长什么样。
+        if (firstFrame === null) firstFrame = tree
         commitEffects()
       } while (rerenderRequested)
     } finally {
       rendering = false
     }
     lastTree = tree
+    api.lastFirstFrame = firstFrame
     return tree
   }
 
@@ -194,8 +200,37 @@ const allText = (nodes) => texts(nodes).join(' ')
  * 「工作区表单里没有按钮」会变成在断言「全页面一个按钮都没有」，
  * 而后者在功能整个画不出来时同样成立（假通过）。要断言「某张卡片里没有 X」，
  * 必须先框定那张卡片。
+ *
+ * 第二版（2026-10-28）：先按 `data-an-card` 的 id 认卡，认不到才退回按标题文字找。
+ *
+ * 上一版只按标题文字找，于是「任何一张卡里出现了另一张卡的标题」就会认错卡 ——
+ * 而文案里提到别的卡名是极常见的事（`identity.desc` 里就写着「用户背景」四个字，
+ * `user.desc` 里又写着「助手身份」）。真实翻车案例：把人设卡的说明改成
+ * 「…也看不到长期记忆。」之后，`cardNodes(tree, '长期记忆')` 先撞上人设卡，
+ * 13 条记忆相关用例集体报「记忆卡里没有 X」——代码本身没坏，是探针指错了对象。
+ * 按 id 认卡不受文案措辞影响；标题兜底只为兼容没写 id 的卡片。
+ *
+ * @param {object} root 渲染树
+ * @param {string} title 卡片标题（词典值），仅在按 id 找不到时使用
+ * @param {string} [cardId] 卡片的 data-an-card id，优先于标题
  */
-function cardNodes(root, title) {
+function cardNodes(root, title, cardId) {
+  if (cardId) {
+    let hit = null
+    const findById = (node) => {
+      if (!node || typeof node !== 'object' || hit) return
+      if (Array.isArray(node)) return node.forEach(findById)
+      if (isComponent(node)) return findById(node.type(node.props))
+      if (node.props?.['data-an-card'] === cardId) {
+        walk(node.props?.children, hit = [])
+        return
+      }
+      findById(node.props?.children)
+    }
+    findById(root)
+    if (hit) return hit
+  }
+
   const out = []
   const visit = (node) => {
     if (!node || typeof node !== 'object') return false
@@ -266,6 +301,15 @@ const FAKE_CONFIG = {
     maxPending: 200,
     maxInjected: 40,
     notifyOnSessionStart: true
+  },
+  // 质检五项。缺这一段时客户端的 qualityDefaults 会全部回落默认值 ——
+  // 那会让「界面显示的值」与「宿主实际的值」脱钩，而界面看不出来。
+  quality: {
+    enabled: true,
+    ledgerLevel: 'three',
+    strict: true,
+    preStepCheck: true,
+    maxFindingsInReminder: 5
   }
 }
 
@@ -324,6 +368,38 @@ const STATE_PAYLOAD = {
     discarded: []
   },
   triageMeta: null,
+  // 质检钩子的运行计数。checks=0 是合法且重要的状态（页面必须明说「没在工作」），
+  // 所以这里给一个已经跑过的样本，另外单列一条用例把 checks=0 与「没有这个字段」分开。
+  qualityStats: {
+    checks: 9,
+    reminders: 3,
+    suppressed: 1,
+    skipped: { 'empty-text': 12 },
+    last: {
+      seq: 4242,
+      at: '2026-10-20T10:00:00.000Z',
+      chars: 512,
+      findings: ['R02'],
+      uncovered: ['R03', 'R05', 'R06', 'R07', 'R10'],
+      injected: true
+    },
+    note: 'checks 是真正跑过判定的次数。'
+  },
+  // 巡夜记录：reported=false 是**合法且重要**的状态（跑过了、判为无事、没汇报），
+  // 它与「这个字段根本不存在」必须被画成两种样子 —— 前者是结论，后者是未知。
+  // 单列一条用例把这两者分开。
+  patrolMeta: {
+    at: '2026-10-23T15:00:00.000Z',
+    day: '2026-10-23',
+    reason: 'nightly',
+    signature: 'p:|f:|t:0',
+    reported: false,
+    wouldReport: false,
+    delivered: 0,
+    reasons: [],
+    facts: { pending: 0, flagged: 0, removed: 0 },
+    checked: 21
+  },
   // 一键导入（Phase ②）：面板要用到的提示词与两个上限。缺这个字段时客户端
   // 必须不画入口 —— 那是「老宿主」路径，单列一条用例。
   memoryImport: {
@@ -427,6 +503,8 @@ const WORKSPACE_PAYLOAD = {
 const fetchCalls = []
 /** /memory/import/commit 的请求体（断言「丢弃的条目不提交」要靠它）。 */
 const commitBodies = []
+/** /api/anima/patrol 的请求体（断言「手动巡夜真的打到路由」要靠它）。 */
+const patrolCalls = []
 let IMPORT_PARSE_FAILS = false
 
 /**
@@ -467,6 +545,92 @@ const AUDIT_PAYLOAD = {
   actors: ['user', 'agent', 'system']
 }
 
+/**
+ * /memory/audit 的假回执。
+ *
+ * 形状必须照抄 lib/memory-audit.mjs 的真实产出：问题放在 `findings` 数组里，
+ * 每条带 {kind, detail, evidence}；建议放在 `suggestion` 里。
+ * （第一版把 kind/detail 写在顶层、没有 findings 数组，结果面板画不出任何东西 ——
+ * 夹具形状写错，测试就测不到真实分支，这条教训在 eventText 那次已经付过学费。）
+ *
+ * 刻意造两条问题：一条路径不存在（该给状态 + 可粘贴命令），一条复核点过期
+ * （只提示、不给状态 —— 过期不等于不成立）。两类被画成一样，断言会红。
+ */
+function auditPayload() {
+  return {
+    ok: true,
+    checked: 2,
+    clean: 0,
+    flagged: [
+      {
+        id: 'm-gone',
+        text: '工具链装在 D:\\gone-not-here 下',
+        type: 'fact',
+        state: undefined,
+        capturedAt: 1760000000000,
+        verifyAt: '2027-04-30',
+        findings: [
+          {
+            kind: 'path-missing',
+            detail: '记忆里写的路径「D:\\gone-not-here」现在已经不存在',
+            evidence: 'fs.existsSync("D:\\\\gone-not-here") === false'
+          }
+        ],
+        suggestion: {
+          state: 'contradicted',
+          why: '这条记忆指向的东西已经不在了',
+          command: '/anima mark m-gone state=contradicted'
+        }
+      },
+      {
+        id: 'm-old',
+        text: '临时结论：这个池子是 3 个节点',
+        type: 'fact',
+        state: undefined,
+        capturedAt: 1760000000000,
+        verifyAt: '2020-01-01',
+        findings: [
+          {
+            kind: 'verify-expired',
+            detail: '复核点是 2020-01-01，已经过去了 —— 这条是不是还成立，只有你知道',
+            evidence: 'verifyAt=2020-01-01 < today=2026-10-22'
+          }
+        ],
+        suggestion: {
+          state: null,
+          why: '只有复核点过期。要不要标「可能已过时」由你决定，代码不替你判',
+          command: '/anima mark m-old state=contradicted'
+        }
+      }
+    ],
+    note: '这份体检只做两件机械能验的事：路径还在不在、复核点过没过。'
+  }
+}
+
+/**
+ * /api/anima/patrol 的假回执。
+ *
+ * 形状照抄 index.mjs 里 runPatrol 的真实返回：
+ * `{ ok, verdict:{shouldReport,signature,reasons,facts}, delivered, at, triage, audit }`。
+ * 第一版把 shouldReport 写在顶层、事实散在别处 —— 客户端读 result.delivered
+ * 会拿到 undefined，于是 toast 永远显示「没有汇报」，看起来像判定错了。
+ */
+function patrolPayload() {
+  return {
+    ok: true,
+    verdict: {
+      shouldReport: false,
+      signature: 'p:|f:|t:0',
+      reasons: [],
+      facts: { pending: 0, flagged: 0, removed: 0 }
+    },
+    delivered: 0,
+    at: '2026-10-23T15:00:00.000Z',
+    triage: { pendingBefore: 0, pendingAfter: 0, discardedTotal: 0 },
+    audit: { checked: 2, flagged: 0 }
+  }
+}
+
 async function fakeFetch(input, init) {
   const url = String(input)
   fetchCalls.push({ url, method: init?.method ?? 'GET', body: init?.body })
@@ -491,6 +655,14 @@ async function fakeFetch(input, init) {
   }
   if (url.includes('/api/anima/preview')) {
     return { ok: true, status: 200, json: async () => PREVIEW_PAYLOAD }
+  }
+  if (url.includes('/api/anima/memory/audit')) {
+    return { ok: true, status: 200, json: async () => auditPayload() }
+  }
+  if (url.includes('/api/anima/patrol')) {
+    patrolCalls.push(JSON.parse(String(init?.body ?? '{}')))
+    // 形状照抄 runPatrol 的真实返回：{ ok, verdict:{shouldReport,signature,reasons,facts}, delivered, at, triage, audit }
+    return { ok: true, status: 200, json: async () => patrolPayload() }
   }
   if (url.includes('/api/anima/state')) {
     return { ok: true, status: 200, json: async () => STATE_PAYLOAD }
@@ -688,9 +860,10 @@ await test('整棵设置页树能渲染出来（组件库不可用时也不崩�
 const tree = lastTree
 const nodes = walk(tree)
 
-await test('九张卡都在，标题走词典而不是原始 key', () => {
+await test('八张卡都在，标题走词典而不是原始 key', () => {
   const titles = byClass(nodes, 'an-card-title').map((n) => n.props.children)
-  const expected = ['preset.title', 'identity.title', 'user.title', 'style.title', 'trail.title', 'ws.title', 'mem.title', 'audit.title', 'preview.title']
+  // 变更记录不再是卡片 —— 它搬到了页面顶部常驻（RecentChanges），单独用下一条断言。
+  const expected = ['preset.title', 'identity.title', 'user.title', 'style.title', 'trail.title', 'ws.title', 'mem.title', 'preview.title']
   for (const key of expected) {
     assert.ok(titles.includes(dict.zh[key]), `缺卡片：${key}（实际标题：${JSON.stringify(titles)}）`)
   }
@@ -698,6 +871,38 @@ await test('九张卡都在，标题走词典而不是原始 key', () => {
   for (const title of titles) {
     assert.equal(/^[a-z]+\.[A-Za-z.]+$/.test(String(title)), false, `标题疑似原始 key：${title}`)
   }
+})
+
+await test('最近改了什么：常驻在顶部，但收起态只占一行（下拉）', () => {
+  // 用户的原话是「我根本不知道改成啥了」。原来的变更记录在「高级」栏里、
+  // 默认收起、还要再点一次「展开明细」，等于没有。这条用例锁住「它常驻」。
+  const recent = byClass(walk(lastTree), 'an-recent')
+  assert.equal(recent.length, 1, `顶部应有且只有一条常驻的改动记录（实际 ${recent.length}）`)
+
+  // 它不能是卡片，否则又回到「要展开才能看」
+  assert.equal(
+    byClass(walk(recent[0]), 'an-card').length, 0,
+    '改动记录不该再是 an-card —— 卡片默认收起的可能性就在这里'
+  )
+
+  // 而且它必须在分区导航之后、任何卡片之前：无论停在哪一栏都看得见
+  const flat = walk(lastTree)
+  const navIndex = flat.findIndex((n) => n.props?.className === 'an-sectnav')
+  const recentIndex = flat.findIndex((n) => n.props?.className === 'an-recent')
+  const firstCardIndex = flat.findIndex((n) => n.props?.className === 'an-card')
+  assert.ok(navIndex >= 0, '找不到分区导航')
+  assert.ok(recentIndex > navIndex, '改动记录应排在分区导航之后')
+  assert.ok(recentIndex < firstCardIndex, '改动记录应排在所有卡片之前（要第一眼看见）')
+
+  // 第三次反馈之后才长成下拉：收起态**一行都不画明细**。
+  // 用户原话「太大了占位置不好看」—— 之前常驻 3 条预览正是元凶。
+  assert.equal(
+    byClass(walk(recent[0]), 'an-audit-change').length, 0,
+    '收起态还在画明细行，又变成拖着一条长尾巴'
+  )
+  const toggle = walk(recent[0]).find((n) => n.props?.className === 'an-recent-toggle')
+  assert.ok(toggle, '缺下拉开关（an-recent-toggle），那就没法展开了')
+  assert.equal(toggle.props['aria-expanded'], 'false')
 })
 
 await test('渲染期请求的每个 t() key 都能解析（动态错拼检查）', () => {
@@ -827,10 +1032,10 @@ await test('工作区覆盖：6 个风格字段都是自由文本输入，空值
   // 与本工作区「我要另一套说法」的意图相反，示例由 placeholder 承担。
   // 断言必须框定在工作区那张卡里 —— 整页扁平化之后，全页面任何一处按钮
   // 都会把这条断言变成「全页面一个按钮都没有」，那是另一回事。
-  assert.equal(byClass(cardNodes(lastTree, dict.zh['ws.title']), 'an-chip').length, 0, '工作区表单不该出现一键填入按钮')
+  assert.equal(byClass(cardNodes(lastTree, dict.zh['ws.title'], 'ws'), 'an-chip').length, 0, '工作区表单不该出现一键填入按钮')
   // 反向确认这条断言真的看得见东西：全局那张卡里必须有按钮组，
   // 否则上面那句在「按钮组整个没画出来」时也会通过。
-  assert.ok(byClass(cardNodes(lastTree, dict.zh['style.title']), 'an-chip').length > 0, '全局风格卡里应当有按钮组')
+  assert.ok(byClass(cardNodes(lastTree, dict.zh['style.title'], 'style'), 'an-chip').length > 0, '全局风格卡里应当有按钮组')
   // 全局表单的同类字段也不能再有 select
   const globalSelect = elements(wsNodes, 'select').find((n) => n.props.id === 'an-style')
   assert.equal(globalSelect, undefined, '全局风格字段不该还是下拉框')
@@ -848,6 +1053,40 @@ await test('注入情况：工作区坐标与两个预算都画出来了', () =>
   // 条数 1/40、字符 4/4000 —— 两行都该在（maxChars > 0）
   assert.ok(text.includes('1 / 40'), `没画条数预算：${text.slice(0, 300)}`)
   assert.ok(text.includes('4 / 4000'), '没画字符预算')
+})
+
+await test('注入情况：超窗计数只在大于 0 时出现（0 条时不画，避免一条永远不动的水位）', async () => {
+  // 现状：21 条记忆全是 7 天龄、全部 fresh。如果这条计数常显，
+  // 它会长期挂着一个 0；而一个长期不动的数字会让人不再看它，
+  // 真跳到 3 条那天也不会被注意到。
+  assert.equal(allText(walk(lastTree)).includes(dict.zh['inj.decayed']), false,
+    '没有超窗条目时不该画这一行')
+
+  // 正例：只有 included 里的条目算超窗。未注入的那条即使 decayed 也不该计入，
+  // 因为它根本没进提示词 —— 计进去会让人以为影响到了模型。
+  const decisions = STATE_PAYLOAD.injection.decisions
+  const saved = decisions.map((d) => d.decayed)
+  try {
+    decisions[0].decayed = true
+    decisions[1].decayed = true
+    // 只改载荷不够：store 还是上一次 loadState 的快照，不重拉就等于没改。
+    await controller.loadState()
+    await flush()
+
+    const text = allText(walk(lastTree))
+    assert.ok(text.includes(dict.zh['inj.decayed']), '有条目超窗时必须画出这一行')
+    // 两条都标了 decayed，但只有第一条 included → 计数必须是 1 而不是 2。
+    const dd = byClass(walk(lastTree), 'an-kv')
+      .map((n) => allText(walk(n)))
+      .find((s) => s.includes(dict.zh['inj.decayed']))
+    assert.ok(dd, `没找到超窗那一行：${text.slice(0, 400)}`)
+    assert.ok(dd.includes('1'), `只数已注入的超窗条目，实际渲染：${dd}`)
+    assert.equal(/\b2\b/.test(dd), false, `未注入的条目被计进去了：${dd}`)
+  } finally {
+    decisions.forEach((d, i) => { d.decayed = saved[i] })
+    await controller.loadState()
+    await flush()
+  }
 })
 
 await test('注入情况：收起时不画逐条解释，展开后连「为什么不进」一起画', async () => {
@@ -880,33 +1119,50 @@ await test('聚类与冲突：只作提示，不自动改数据', () => {
 
 console.log('\n[变更记录]')
 
-/** 取当前树里某个审计字段行（按 .an-audit-key 的文本找）。 */
-function auditChangeRow(key) {
+/** 取当前树里某个审计字段行（按 .an-audit-key 的文本找）。
+ *
+ * 注意这里收的是**人话名**（词典里的 field.*），不是 lib/store.mjs 的原始键名：
+ * 界面上显示的就是人话，按 `agentName` 去找永远找不到 —— 那是曾经的样子。 */
+function auditChangeRow(label) {
   const rows = byClass(walk(lastTree), 'an-audit-change')
-  return rows.find((row) => walk(row).some((n) => n.kind === 'text' && n.value === key)) ?? null
+  return rows.find((row) => walk(row).some((n) => n.kind === 'text' && n.value === label)) ?? null
 }
 
-/** 找「变更记录」卡片里的某个按钮（标题走词典）。 */
+/** 取一行审计里的字段名（.an-audit-key 的文本）。 */
+function auditKeyText(row) {
+  const key = byClass(walk(row), 'an-audit-key')[0]
+  if (!key) return ''
+  return walk(key).filter((n) => n.kind === 'text').map((n) => n.value).join('')
+}
+
+/** 找顶部常驻「最近改了什么」里的某个按钮（按词典文案）。 */
 function auditButton(labelKey) {
-  const card = byClass(walk(lastTree), 'an-card')
-    .find((n) => walk(n).some((x) => x.kind === 'text' && x.value === dict.zh['audit.title']))
-  assert.ok(card, '找不到变更记录卡片')
-  return walk(card).find((n) => n.kind === 'element' && n.type === 'button'
+  const section = byClass(walk(lastTree), 'an-recent')[0]
+  assert.ok(section, '找不到顶部常驻的改动记录（an-recent）')
+  return walk(section).find((n) => n.kind === 'element' && n.type === 'button'
     && String(n.props.children) === dict.zh[labelKey]) ?? null
 }
 
-await test('未展开时只显示条数，且不预打 /audit', () => {
-  // 收拢态：明细行不该在树里（默认折叠，避免每次进设置页都拉一遍全量）
-  assert.equal(byClass(walk(lastTree), 'an-audit-change').length, 0, '折叠时不该渲染明细行')
+/** 下拉开关本身（它不靠 - 里，文案是「变更记录」而不是 labelKey）。 */
+function auditToggle() {
+  const section = byClass(walk(lastTree), 'an-recent')[0]
+  assert.ok(section, '找不到顶部常驻的改动记录（an-recent）')
+  return walk(section).find((n) => n.props?.className === 'an-recent-toggle') ?? null
+}
+
+await test('收起态：只占一行，不画明细、不预打 /audit', () => {
+  // 首屏用的是 /state 随包下发的计数，不发请求 —— 打开设置页不该等一份日志。
+  assert.equal(fetchCalls.some((c) => c.url.includes('/api/anima/audit')), false, '收起态不该发 /audit')
   const texts = allText(walk(lastTree))
   assert.ok(texts.includes(`${dict.zh['audit.total']} 2`), `没显示条数徽标：${texts.slice(0, 300)}`)
-  assert.equal(fetchCalls.some((c) => c.url.includes('/api/anima/audit')), false, '折叠时不该发 /audit')
+  // 条数照旧告诉用户「值不值得点开」，但明细一行都不铺
+  assert.equal(byClass(walk(lastTree), 'an-audit-change').length, 0, '收起态不该铺明细行')
 })
 
 await test('展开：真打一次 /audit，并渲染出明细', async () => {
   fetchCalls.length = 0
-  const toggle = auditButton('audit.toggle')
-  assert.ok(toggle, '缺展开按钮')
+  const toggle = auditToggle()
+  assert.ok(toggle, '缺下拉开关')
   toggle.props.onClick()
   await new Promise((resolve) => setTimeout(resolve, 20))
   await flush()
@@ -919,28 +1175,52 @@ await test('展开：真打一次 /audit，并渲染出明细', async () => {
   // state 里 2 条共 2 个字段 + /audit 新增 1 条 1 个字段 = 3 行
   assert.equal(rows.length, 3, `明细行数不对（${rows.length}）`)
   const joined = allText(walk(lastTree))
-  assert.ok(joined.includes('agentName'), `没显示字段名：${joined.slice(0, 400)}`)
+  assert.ok(joined.includes(dict.zh['field.agentName']), `没显示字段名：${joined.slice(0, 400)}`)
   assert.ok(joined.includes(dict.zh['audit.actor.agent']), '没显示改动者（模型）')
   assert.ok(joined.includes(dict.zh['audit.actor.user']), '没显示改动者（你）')
 })
 
+await test('字段名翻人话：界面上不许出现 agentName 这类代码键名', () => {
+  // 这条是防回归的：改动记录曾经直接把 diffConfig 的原始键名画在屏幕上，
+  // 「UI 面向人类不面向 AI」这句抱怨指的就是它。断言用一份真实键名清单，
+  // 任何一个漏到界面上都算失败。
+  const rawKeys = [
+    'agentName', 'agentRole', 'addressUserAs', 'userOccupation', 'userBio',
+    'headingLists', 'replyLength', 'customInstructions', 'requireToolConfirmation',
+    'trailColor', 'trailSpeed', 'trailWidth', 'workspaceOverridesEnabled',
+    'workspaceFileDir', 'memory.maxInjected', 'memory.maxPending', 'quality.ledgerLevel'
+  ]
+  const joined = allText(walk(lastTree))
+  const leaked = rawKeys.filter((key) => joined.includes(key))
+  assert.equal(leaked.length, 0, `这些代码键名漏到界面上了：${JSON.stringify(leaked)}`)
+
+  // 反向确认：三行都翻成了词典里的人话，不是「什么都没显示」而侥幸过关
+  const rows = byClass(walk(lastTree), 'an-audit-change')
+  const labels = rows.map((row) => auditKeyText(row))
+  assert.equal(labels.length, 3, `明明有三行却只取到 ${labels.length} 个字段名`)
+  const expected = [dict.zh['field.style'], dict.zh['field.agentName'], dict.zh['field.presets']]
+  for (const label of labels) {
+    assert.ok(expected.includes(label), `字段名不是词典里的人话：${JSON.stringify(label)}`)
+  }
+})
+
 await test('展开后取的是全量：新条目在上', async () => {
   const rows = byClass(walk(lastTree), 'an-audit-change')
-  const keys = rows.map((row) => walk(row).find((n) => n.kind === 'text' && /^[a-z]/.test(n.value))?.value)
+  const labels = rows.map((row) => auditKeyText(row))
   // /audit 的第三条（style）应排在 state 那两条之前 —— 新的在上
-  assert.equal(keys[0], 'style', `最新一条不在最前：${JSON.stringify(keys)}`)
+  assert.equal(labels[0], dict.zh['field.style'], `最新一条不在最前：${JSON.stringify(labels)}`)
 })
 
 await test('摘要值相等时只显示一次，不编造差异', () => {
-  const row = auditChangeRow('presets')
-  assert.ok(row, '找不到 presets 那行')
+  const row = auditChangeRow(dict.zh['field.presets'])
+  assert.ok(row, `找不到「${dict.zh['field.presets']}」那行`)
   const inner = walk(row)
   assert.equal(inner.filter((n) => n.kind === 'text' && n.value === '[1 项]').length, 1, '值相等却显示了两次')
   assert.equal(byClass(inner, 'an-audit-from').length, 0, '值相等时不该有划线原值')
   assert.equal(inner.some((n) => n.kind === 'text' && n.value.includes('→')), false, '值相等却画了箭头')
   // 真变了的字段反过来必须有原值 → 新值
-  const real = auditChangeRow('agentName')
-  assert.ok(real, '找不到 agentName 那行')
+  const real = auditChangeRow(dict.zh['field.agentName'])
+  assert.ok(real, `找不到「${dict.zh['field.agentName']}」那行`)
   assert.equal(byClass(walk(real), 'an-audit-from').length, 1, '真变了却只显示一个值')
 })
 
@@ -977,12 +1257,21 @@ await test('清空记录：确认后发 DELETE，并回读一次（界面不停�
   }
 })
 
-await test('收起：明细行从树里消失', async () => {
-  const hide = auditButton('audit.hide')
-  assert.ok(hide, '缺收起按钮')
+await test('收起：整块收起只剩一行，清空入口消失', async () => {
+  // 下拉的语义：收起 = 明细全收走，不是「只留预览」。顶部那一行始终在，
+  // 所以「用户又不知道改成啥了」不成立 —— 他一眼能看见条数。
+  const hide = auditToggle()
+  assert.ok(hide, '缺下拉开关')
+  assert.equal(hide.props['aria-expanded'], 'true')
   hide.props.onClick()
   await flush()
-  assert.equal(byClass(walk(lastTree), 'an-audit-change').length, 0, '收起后明细仍留在树里')
+
+  // ① 开关翻回收起态
+  assert.equal(auditToggle().props['aria-expanded'], 'false', '收起后 aria-expanded 没翻回 false')
+  // ② 清空记录只属于展开视图，收起态不该出现（防止误删整份日志）
+  assert.equal(auditButton('audit.clear'), null, '收起态仍留着清空入口')
+  // ③ 明细全收走
+  assert.equal(byClass(walk(lastTree), 'an-audit-change').length, 0, '收起后还留着明细行')
 })
 
 console.log('\n[交互]')
@@ -1011,13 +1300,28 @@ await test('关闭总开关：所有表单区跟着走（不是只有开关自�
   assert.equal(restored.props.checked, true)
 })
 
-await test('展开预览：走 400ms 防抖后真打 /preview，并显示宿主返回的文本', async () => {
+await test('展开预览：点卡片标题栏展开后才拉，走 400ms 防抖，并显示宿主返回的文本', async () => {
   fetchCalls.length = 0
-  const before = elements(walk(lastTree), 'button')
-    .find((n) => String(n.props.children) === dict.zh['preview.toggle'])
-  assert.ok(before, '缺预览展开按钮')
-  before.props.onClick()
-  // 防抖未到时不该发请求
+  // 预览卡默认收起（「查的收起」），展开入口就是卡片自己的折叠按钮 ——
+  // 2026-10-29 之前这里还有第二个「显示/收起」按钮，两层门，已删。
+  const openToggle = () =>
+    byClass(cardNodes(lastTree, dict.zh['preview.title'], 'preview'), 'an-card-toggle')[0]
+  const collapsed = () =>
+    byClass(walk(lastTree), 'an-card an-card-collapsed').some((n) => n.props['data-an-card'] === 'preview')
+
+  if (collapsed()) {
+    const toggle = openToggle()
+    assert.ok(toggle, '缺预览卡的展开按钮')
+    assert.equal(toggle.props['aria-expanded'], 'false', '收起态的按钮应标 aria-expanded=false')
+    toggle.props.onClick()
+    await flush()
+  }
+  assert.equal(collapsed(), false, '点了展开但卡片仍收着')
+  // 防抖未到时不该发请求（这一步必须在展开后重新清零，展开本身不拉数据）
+  fetchCalls.length = 0
+  // 改一个字段触发重新预览，验证防抖
+  const nameInput = elements(walk(lastTree), 'input').find((n) => n.props.id === 'an-agent-name')
+  nameInput.props.onChange({ target: { value: '小沃' } })
   assert.equal(fetchCalls.some((c) => c.url.includes('/preview')), false, '防抖失效，立刻发了请求')
 
   await new Promise((resolve) => setTimeout(resolve, 500))
@@ -1030,6 +1334,15 @@ await test('展开预览：走 400ms 防抖后真打 /preview，并显示宿主�
   const text = allText(walk(lastTree))
   assert.ok(text.includes('你的名字：小沃'), `预览文本没显示出来：${text.slice(0, 200)}`)
   assert.ok(text.includes('本工作区'), '字段来源说明没显示')
+
+  // 收回去，别把折叠态留给后面依赖「默认收着」的用例。
+  // （2026-10-29 首次写这条时忘了收，下一条折叠用例读到 {preview:false}，
+  //   断言精确 JSON 就红了 —— 泄漏状态比断言不准更常见。）
+  if (!collapsed()) {
+    openToggle().props.onClick()
+    await flush()
+  }
+  assert.equal(collapsed(), true, '预览用例跑完后没把卡片收回原样')
 })
 
 await test('切工作区覆盖输入框：写入的是覆盖值而不是整体替换', async () => {
@@ -1115,12 +1428,16 @@ function renderFreshSettings() {
   )
 }
 
-await test('卡片折叠：状态落 localStorage，且脏值一律按「没收起」', async () => {
-  const COLLAPSED_KEY = 'dsh-anima:collapsed-cards'
+await test('卡片折叠：默认态按「改的展开、查的收起」，手动翻过就听用户的', async () => {
+  // 存储键在 2026-10-29 换了：旧键 `collapsed-cards` 只记「收起的」，
+  // 而新规则下「收起的」正好是默认态 —— 沿用旧键会让以前手展开过的卡永久收起。
+  const CARD_STATE_KEY = 'dsh-anima:card-state'
   const title = dict.zh['identity.title']
   // 判「正文还在不在」必须挑一个只出现在正文里的东西：卡头（aside 里的折叠按钮
   // 与标题）收起后照样渲染，拿标题或按钮文案去判会永远为真。
   const hasBody = () => elements(walk(lastTree), 'input').some((n) => n.props.id === 'an-agent-name')
+  const collapsedClasses = () =>
+    byClass(walk(lastTree), 'an-card an-card-collapsed').map((n) => n.props['data-an-card'])
   // 用例中途失败也别把折叠态留给后面的用例：后文有断言依赖「卡片是展开的」。
   const restore = () => {
     for (const button of elements(walk(lastTree), 'button')) {
@@ -1131,7 +1448,19 @@ await test('卡片折叠：状态落 localStorage，且脏值一律按「没收�
   }
 
   try {
-    const toggle = byClass(cardNodes(lastTree, title), 'an-card-toggle')[0]
+    storageBacking.delete(CARD_STATE_KEY)
+    const fresh = walk(renderFreshSettings())
+    const freshCollapsed = byClass(fresh, 'an-card an-card-collapsed').map((n) => n.props['data-an-card'])
+    assert.ok(
+      !freshCollapsed.includes('identity'),
+      `人设卡是「改东西」的地方，默认必须展开（实际收起的：${JSON.stringify(freshCollapsed)}）`
+    )
+    assert.ok(
+      freshCollapsed.includes('preview'),
+      `预览卡是「看结果」的地方，默认应当收起（实际收起的：${JSON.stringify(freshCollapsed)}）`
+    )
+
+    const toggle = byClass(cardNodes(lastTree, title, 'identity'), 'an-card-toggle')[0]
     assert.ok(toggle, '缺折叠按钮')
     assert.equal(toggle.props['aria-expanded'], 'true', '初始应展开')
     assert.ok(hasBody(), '展开态下卡片正文应在树里')
@@ -1139,18 +1468,14 @@ await test('卡片折叠：状态落 localStorage，且脏值一律按「没收�
     toggle.props.onClick()
     await flush()
 
-    assert.equal(
-      storageBacking.get(COLLAPSED_KEY),
-      JSON.stringify({ identity: true }),
-      '折叠状态没落盘'
-    )
+    // 断言按字段读，不比对整份 JSON：这份存储里还有别的卡的记录
+    // （预览卡默认收起，前面用例可能已经写进去过），整份比对会把
+    // 「别人留下的记录」误判成「本卡没落盘」。
+    const stored = () => JSON.parse(storageBacking.get(CARD_STATE_KEY) ?? '{}')
+    assert.equal(stored().identity, true, '折叠状态没落盘')
     // 收起是「不渲染」而不是「用 CSS 藏起来」：整段正文消失，卡头还在。
     // （cardNodes 只认 className === 'an-card' 的节点，所以收起后它查不到这张卡。）
-    const sections = elements(walk(lastTree), 'section').filter((n) =>
-      String(n.props.className).includes('an-card-collapsed')
-    )
-    assert.equal(sections.length, 1, `应恰好收起一张卡（实际 ${sections.length}）`)
-    assert.equal(sections[0].props.className, 'an-card an-card-collapsed')
+    assert.deepEqual(collapsedClasses().sort(), ['identity', 'preview'], '人设卡收起后应与预览卡并列')
     assert.equal(hasBody(), false, '卡片收起了但正文还在树里')
     assert.ok(
       byClass(walk(lastTree), 'an-card-title').map((n) => n.props.children).includes(title),
@@ -1160,40 +1485,53 @@ await test('卡片折叠：状态落 localStorage，且脏值一律按「没收�
     // 再点一次展开：按钮此时带着 aria-expanded="false"（byClass 是严格全等，
     // 收起后的卡片节点已经不在 cardNodes 里了，只能全页找）。
     const reopen = elements(walk(lastTree), 'button').find(
-      (n) => n.props.className === 'an-card-toggle' && n.props['aria-expanded'] === 'false'
+      (n) => n.props.className === 'an-card-toggle' && n.props['aria-expanded'] === 'false' &&
+        String(n.props.children) === dict.zh['card.expand']
     )
     assert.ok(reopen, '收起后找不到展开按钮')
     reopen.props.onClick()
     await flush()
-    assert.equal(storageBacking.get(COLLAPSED_KEY), '{}', '展开后应把该键删掉')
+    // 翻回默认态也要**写下来**，不能删键：删键等于「回到默认」，
+    // 用户这一下就变成了「点了没反应」。
+    assert.equal(stored().identity, false, '翻回展开态后应记下 false，而不是删掉键')
     assert.ok(hasBody(), '展开后正文没回来')
 
-    // 脏值：手改过 localStorage（值不是 true、或整段不是 JSON）时一律按「没收起」，
-    // 否则一次误改就能让某张卡永远打不开。
-    storageBacking.set(COLLAPSED_KEY, JSON.stringify({ identity: 'yes', preview: 1 }))
+    // 脏值：手改过 localStorage（值不是布尔、或整段不是 JSON）时一律丢弃，
+    // 回落到卡片自己的默认态，否则一次误改就能让某张卡永远打不开。
+    storageBacking.set(CARD_STATE_KEY, JSON.stringify({ identity: 'yes', preview: 1 }))
     assert.equal(
       byClass(walk(renderFreshSettings()), 'an-card an-card-collapsed').length,
-      0,
-      '非 true 的脏值把卡片钉死了'
+      1,
+      '非布尔脏值不该生效（此时只有预览卡按默认收起）'
     )
 
-    storageBacking.set(COLLAPSED_KEY, '{oops')
+    storageBacking.set(CARD_STATE_KEY, '{oops')
     assert.equal(
       byClass(walk(renderFreshSettings()), 'an-card an-card-collapsed').length,
-      0,
+      1,
       '坏 JSON 应该被当成空对象，不是让整页崩'
     )
 
     // 真值仍然生效：脏值被忽略不等于把功能整个关掉
-    storageBacking.set(COLLAPSED_KEY, JSON.stringify({ identity: true }))
+    storageBacking.set(CARD_STATE_KEY, JSON.stringify({ identity: true }))
     assert.equal(
       byClass(walk(renderFreshSettings()), 'an-card an-card-collapsed').length,
-      1,
+      2,
       '真值没被读进去'
     )
+    // 反向也是真的：把默认收起的预览卡写成 false，它就该展开
+    storageBacking.set(CARD_STATE_KEY, JSON.stringify({ preview: false }))
+    assert.equal(
+      byClass(walk(renderFreshSettings()), 'an-card an-card-collapsed').length,
+      0,
+      'false 没能覆盖默认收起'
+    )
+    // 上面几条都用 renderFreshSettings 反复重建，会留下「展开态」的记忆 ——
+    // 清掉，别让后文依赖默认收起的用例读到污染值。
+    storageBacking.delete(CARD_STATE_KEY)
   } finally {
     restore()
-    storageBacking.delete(COLLAPSED_KEY)
+    storageBacking.delete(CARD_STATE_KEY)
   }
 })
 
@@ -1305,7 +1643,7 @@ await test('光轨实时预览：挂载点拿不到时降级不抛，三种状�
 await test('预览卡：字符数与被校验挡下的草稿字段清单都会渲染', async () => {
   const title = dict.zh['preview.title']
   // ① 字符数：必须与真正渲染出来的那段文本长度对得上（不是另算一份）
-  let inner = cardNodes(lastTree, title)
+  let inner = cardNodes(lastTree, title, 'preview')
   const pre = byClass(inner, 'an-pre')[0]
   assert.ok(pre, '预览卡里没有提示词正文')
   const body = String(pre.props.children)
@@ -1323,7 +1661,7 @@ await test('预览卡：字符数与被校验挡下的草稿字段清单都会�
     await controller.loadPreview('', { agentName: '小沃' })
     await flush()
 
-    inner = cardNodes(lastTree, title)
+    inner = cardNodes(lastTree, title, 'preview')
     const box = byClass(inner, 'an-invalid')
     assert.equal(box.length, 1, '没渲染被拒字段清单')
     // allText 只吃 walk() 产出的扁平节点表（元素节点本身不带文本）
@@ -1384,7 +1722,7 @@ await test('设置页自动刷新：后台不拉、回前台拉一次、10 秒�
 
 await test('导入面板：默认不展开，展开后两步都在，第 1 步有提示词与复制按钮', async () => {
   const memTitle = dict.zh['mem.title']
-  const nodes = () => cardNodes(lastTree, memTitle)
+  const nodes = () => cardNodes(lastTree, memTitle, 'mem')
   // 判「面板在不在」用只有面板正文才有的 textarea id：标题与按钮文案在收起态
   // 照样渲染，拿它们判会永远为真。
   const panelText = () => elements(nodes(), 'textarea').find((n) => n.props.id === 'an-import-text')
@@ -1426,7 +1764,7 @@ await test('导入面板：默认不展开，展开后两步都在，第 1 步�
 
 await test('导入面板：解析 → 逐条预览 → 丢弃的不提交、改过的层级跟着走', async () => {
   const memTitle = dict.zh['mem.title']
-  const nodes = () => cardNodes(lastTree, memTitle)
+  const nodes = () => cardNodes(lastTree, memTitle, 'mem')
   const panelText = () => elements(nodes(), 'textarea').find((n) => n.props.id === 'an-import-text')
   // 面板此刻应是展开的（上一条用例点开过）。若单独跑这一条，这里会返回 false，
   // 断言会明确说「面板没展开」，而不是抛一个读不到 props 的 TypeError。
@@ -1515,7 +1853,7 @@ await test('导入面板：解析 → 逐条预览 → 丢弃的不提交、改�
 
 await test('导入面板：解析失败时给可读错误，且不留下半截预览', async () => {
   const memTitle = dict.zh['mem.title']
-  const nodes = () => cardNodes(lastTree, memTitle)
+  const nodes = () => cardNodes(lastTree, memTitle, 'mem')
   const panelText = () => elements(nodes(), 'textarea').find((n) => n.props.id === 'an-import-text')
   const entry = () => elements(nodes(), 'button').find((n) => n.props.children === dict.zh['imp.open'])
   const cancel = () => elements(nodes(), 'button').find((n) => n.props.children === dict.zh['imp.cancel'])
@@ -1560,7 +1898,7 @@ await test('导入面板：老宿主不下发 memoryImport 时整个入口消失
   try {
     await controller.loadState()
     await flush()
-    const nodes = cardNodes(lastTree, dict.zh['mem.title'])
+    const nodes = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
     const labels = elements(nodes, 'button').map((n) => n.props.children)
     assert.equal(
       labels.includes(dict.zh['imp.open']),
@@ -1579,6 +1917,791 @@ await test('导入面板：老宿主不下发 memoryImport 时整个入口消失
 
 await test('运行时没攒下未捕获的钩子异常', () => {
   assert.deepEqual(runtime.errors, [], `钩子执行抛了 ${runtime.errors.length} 次`)
+})
+
+// 这条测的是「表单里看得见的值，保存时真的会被带上」。
+//
+// 真实缺陷（2026-10-20 修）：maxInjectedChars 的输入框早就在、能打字、能显示，
+// 但 memoryDefaults 与 configPayload 里都没有这个键 —— 于是它既不进保存载荷，
+// 也不进脏检测。表现是：用户改了数字，保存按钮一直是灰的，一个字节都没写盘，
+// 而界面上一切正常。41 项客户端冒烟全绿也没抓到它，因为这些用例只渲染不保存。
+//
+// 所以这条用例不看渲染，直接看**发给宿主的请求体**。
+await test('记忆层的字符预算必须真的进保存载荷（能显示却存不下的字段等于不存在）', async () => {
+  renderFreshSettings()
+  await flush()
+
+  const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')[0]
+  assert.ok(card, '缺长期记忆卡片')
+
+  // 直接把输入框的 onChange 调成 1234，模拟用户改了这个值。
+  const input = elements(walk(lastTree), 'input').find((n) => n.props.id === 'an-mem-chars')
+  assert.ok(input, '缺「最多注入字符」输入框')
+  input.props.onChange({ target: { value: '1234' } })
+  await flush()
+
+  // 改了值之后，保存按钮必须变成可点 —— 否则说明它根本没进脏检测。
+  const save = elements(walk(lastTree), 'button').find((n) => String(n.props.children) === dict.zh['common.save'])
+  assert.ok(save, '缺保存按钮')
+  assert.equal(Boolean(save.props.disabled), false, '改了字符预算却没变脏：这个值没进脏检测')
+
+  fetchCalls.length = 0
+  await save.props.onClick()
+  await flush()
+
+  const post = fetchCalls.find((c) => c.url.includes('/api/anima/config') && c.method === 'POST')
+  assert.ok(post, '没发出保存请求')
+  const body = JSON.parse(String(post.body))
+  assert.equal(
+    body.memory.maxInjectedChars,
+    1234,
+    '载荷里没有 maxInjectedChars（或值没跟过去）—— 输入框能改，但存不下'
+  )
+  // 顺带把同段的另一个数字也钉住：只验一个新字段，容易漏掉「顺手把别的挤掉」。
+  assert.equal(typeof body.memory.maxInjected, 'number', '载荷丢了 maxInjected')
+})
+
+// 质检开关是这一层唯一能当场闭嘴的入口，所以它的三条硬要求各有各的用例：
+// ① 界面上的值必须来自宿主配置（不是硬编码默认值）；
+// ② 改了必须进载荷（否则又是「能改却存不下」）；
+// ③ checks=0 时界面必须明说「没在工作」，不许显示得像一切正常。
+//
+// 注意事件形状：这些控件的 onChange 收的是事件对象而不是裸值。
+// 直接传 false 会在 Toggle 内部的 event.target.checked 上炸掉 —— 那是假绿的反面：
+// 用例会「报错」而不是「失败」，看起来像环境问题而不像断言问题。
+await test('质检卡片：五项都从宿主配置读出来，关掉总开关后卡片还在（关得回来）', async () => {
+  renderFreshSettings()
+  await flush()
+
+  const title = dict.zh['quality.title']
+  assert.ok(cardNodes(lastTree, title, 'quality')[0], '缺质检卡片')
+
+  const inputById = (id) => elements(walk(lastTree), 'input').find((n) => n.props.id === id)
+  const selectById = (id) => elements(walk(lastTree), 'select').find((n) => n.props.id === id)
+
+  const enabled = inputById('an-quality-enabled')
+  assert.ok(enabled, '缺「启用质检层」开关')
+  assert.equal(enabled.props.checked, true, '开关没反映宿主配置（应为开）')
+
+  const ledger = selectById('an-quality-ledger')
+  assert.ok(ledger, '缺对账档位下拉框')
+  assert.equal(ledger.props.value, 'three', '档位没反映宿主配置')
+  // 三个档位必须都在选项里：少一个就永远选不到那个值。
+  const options = elements(walk(ledger), 'option').map((n) => n.props.value)
+  assert.deepEqual(options, ['off', 'three', 'five'], `档位选项不全：${options.join('/')}`)
+
+  assert.equal(inputById('an-quality-strict')?.props.checked, true, '严格判词没反映宿主配置')
+  assert.equal(inputById('an-quality-precheck')?.props.checked, true, '机制检查没反映宿主配置')
+  assert.equal(Number(inputById('an-quality-max')?.props.value), 5, '每轮条数没反映宿主配置')
+
+  // 关掉总开关：卡片不能整片消失 —— 那是「关下去就点不回来」的形状，
+  // 而这一层恰好在「太吵了想关」的时刻被用到，关掉后再想开必须还有路。
+  enabled.props.onChange({ target: { checked: false } })
+  await flush()
+  assert.ok(cardNodes(lastTree, title, 'quality')[0], '关掉总开关后整张卡片消失了，开不回来')
+  assert.equal(inputById('an-quality-enabled').props.checked, false, '关掉后开关没变')
+})
+
+await test('质检五项必须真的进保存载荷（显示得出却存不下的字段等于不存在）', async () => {
+  renderFreshSettings()
+  await flush()
+
+  const inputById = (id) => elements(walk(lastTree), 'input').find((n) => n.props.id === id)
+  const selectById = (id) => elements(walk(lastTree), 'select').find((n) => n.props.id === id)
+
+  // 把四项都改成非默认值（strict 保持 true，它是唯一「开着」的默认值）：
+  // 只改一项的话，漏掉另外几项仍然会全绿。
+  inputById('an-quality-enabled').props.onChange({ target: { checked: false } })
+  selectById('an-quality-ledger').props.onChange({ target: { value: 'five' } })
+  inputById('an-quality-precheck').props.onChange({ target: { checked: false } })
+  inputById('an-quality-max').props.onChange({ target: { value: '9' } })
+  await flush()
+
+  const save = elements(walk(lastTree), 'button').find((n) => String(n.props.children) === dict.zh['common.save'])
+  assert.ok(save, '缺保存按钮')
+  assert.equal(Boolean(save.props.disabled), false, '改了质检设置却没变脏：这些值没进脏检测')
+
+  fetchCalls.length = 0
+  await save.props.onClick()
+  await flush()
+
+  const post = fetchCalls.find((c) => c.url.includes('/api/anima/config') && c.method === 'POST')
+  assert.ok(post, '没发出保存请求')
+  const body = JSON.parse(String(post.body))
+  assert.ok(body.quality, '载荷里根本没有 quality 段')
+  assert.equal(body.quality.enabled, false, 'enabled 没进载荷')
+  assert.equal(body.quality.ledgerLevel, 'five', 'ledgerLevel 没进载荷')
+  assert.equal(body.quality.strict, true, 'strict 没进载荷')
+  assert.equal(body.quality.preStepCheck, false, 'preStepCheck 没进载荷')
+  assert.equal(body.quality.maxFindingsInReminder, 9, 'maxFindingsInReminder 没进载荷')
+  // 顺手钉住记忆段：新增一个段最容易把相邻段的默认值挤掉。
+  assert.equal(typeof body.memory.maxInjected, 'number', '新增 quality 段把 memory 段挤掉了')
+})
+
+await test('记忆卡片的四项元数据必须画出来（记了但看不见，等于没记）', async () => {
+  // 这四项以前只在 JSON 里能看到。看不见的结果是：用户只能选择相信整份记忆库——
+  // 一条是事实还是偏好（决定它衰不衰减）、复核点过没过期（决定它还算不算数）、
+  // 出处是什么（决定它能不能被核对），全都无从判断。
+  const saved = STATE_PAYLOAD.memories
+  try {
+    STATE_PAYLOAD.memories = {
+      pending: [],
+      adopted: [
+        {
+          id: 'm-meta',
+          text: '某条带着完整元数据的记忆',
+          status: 'adopted',
+          capturedAt: 1760000000000,
+          type: 'preference',
+          state: 'superseded',
+          verifyAt: '2020-01-01',
+          sourceRef: '用户原话@session-abc#seq=11'
+        }
+      ],
+      discarded: []
+    }
+    // 只换 STATE_PAYLOAD 不够：store 还是上一次 loadState 的快照，不重拉就等于
+    // 在测旧数据 —— 这条用例会「绿得毫无意义」。见下方 quality 那条用例的同一教训。
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    // 注意：cardNodes 返回的是「这张卡的扁平节点表」（数组），不是单个节点。
+    // 第一版写成 cardNodes(...)[0] 再交给 allText，报 nodes.filter is not a function ——
+    // 测试夹具写错形状时，红的是测试本身，但它同样会挡住真信号。
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(text.includes(dict.zh['mem.typePreference']), '类型徽章没画出来')
+    assert.ok(text.includes(dict.zh['mem.stateSuperseded']), '「曾如此」没画出来：用户会以为它还现行')
+    assert.ok(text.includes('2020-01-01'), '复核点没画出来')
+    assert.ok(text.includes(dict.zh['mem.verifyOverdue']), '复核点已经过期，却没标出来')
+    assert.ok(text.includes('session-abc#seq=11'), '出处没画出来，这条记忆就无法被核对')
+  } finally {
+    STATE_PAYLOAD.memories = saved
+  }
+})
+
+await test('体检面板：没查过时一个字都不许说，查过才给结论', async () => {
+  // 「没查」与「查了没事」必须长得不一样。前者是未知，后者是结论 ——
+  // 把未知画成结论，就是本项目一直在防的那件事。
+  renderFreshSettings()
+  await flush()
+  const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+  const text = allText(card)
+  assert.ok(text.includes(dict.zh['checkup.run']), '记忆卡片里没有体检入口')
+  assert.equal(
+    text.includes(dict.zh['checkup.clean']),
+    false,
+    '还没查过就说「都通过了」——这是把未知说成结论'
+  )
+  assert.equal(
+    text.includes(dict.zh['checkup.stale']),
+    false,
+    '还没查过却画出了「结果来自上一次体检」的提示'
+  )
+})
+
+await test('体检面板：查出问题必须逐条给出证据与命令，不许只说「有问题」', async () => {
+  const saved = STATE_PAYLOAD.memories
+  try {
+    STATE_PAYLOAD.memories = {
+      pending: [],
+      adopted: [
+        { id: 'm-gone', text: '工具链装在 D:\\gone-not-here 下', status: 'adopted', capturedAt: 1760000000000, type: 'fact' }
+      ],
+      discarded: []
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+    // 先确认按钮真的画出来了，再点它 —— 直接调回调会绕过「入口有没有渲染」这一层。
+    // 注意 allText 只收 text 节点，不能直接喂 element 节点（那样恒为空串，
+    // 于是一条本该红的用例会以「找不到按钮」的形式红，看起来像实现缺了）。
+    const buttons = elements(card, 'button').filter((node) => allText(walk(node, [])).trim() === dict.zh['checkup.run'])
+    assert.ok(buttons.length > 0, '没有找到「体检」按钮')
+    buttons[0].props.onClick()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(text.includes(dict.zh['checkup.kindPathMissing']), '路径不存在的问题没被画出来')
+    assert.ok(text.includes('D:\\gone-not-here'), '证据里没写出到底是哪个路径')
+    assert.ok(text.includes('/anima mark m-gone state=contradicted'), '没给出可直接粘贴的命令')
+    assert.ok(text.includes(dict.zh['checkup.apply']), '没有「按建议标为有争议」的按钮')
+    // 关键：体检不许自动改任何东西。扫可以自动，裁决必须由人点。
+    assert.equal(
+      fetchCalls.some((call) => String(call.url ?? '').includes('/memory/meta')),
+      false,
+      '体检居然调了写接口 —— 扫描可以自动，裁决必须由人点'
+    )
+  } finally {
+    STATE_PAYLOAD.memories = saved
+  }
+})
+
+await test('记忆卡片：没有元数据时不许凭空画出徽章（缺字段不等于「事实」）', async () => {
+  // 老记忆一条都没有 type/state/verifyAt/sourceRef。回落成「事实」会让用户以为
+  // 那是数据，其实是单元格空着 —— 空着就该什么都不画。
+  const saved = STATE_PAYLOAD.memories
+  try {
+    STATE_PAYLOAD.memories = {
+      pending: [],
+      adopted: [{ id: 'm-bare', text: '一条没有任何元数据的旧记忆', status: 'adopted', capturedAt: 1760000000000 }],
+      discarded: []
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+    // 不能取全部 .an-item：记忆条目和体检发现用的是同一个 class，取全部会把
+    // 别的用例留下的体检结果也算进来 —— 那时断言会以「明明没有复核点却画了复核点」
+    // 的形式红，而真出问题时它同样红，等于这条用例既抓不到真问题也说不清假问题。
+    // 正确做法是先按记忆正文定位到那一条，再只看它。
+    const items = byClass(card, 'an-item')
+    const bare = items.find((node) => allText(walk(node, [])).includes('一条没有任何元数据的旧记忆'))
+    assert.ok(bare, `没有渲染出那条记忆条目，后面的断言等于没测（卡片里共 ${items.length} 个 .an-item）`)
+    const text = allText(walk(bare, []))
+    assert.equal(text.includes(dict.zh['mem.typeFact']), false, `没有 type 却画出了「事实」徽章｜实测条目文字：${text}`)
+    assert.equal(text.includes(dict.zh['mem.verifyAt']), false, `没有复核点却画出了复核点｜实测条目文字：${text}`)
+    assert.equal(text.includes(dict.zh['mem.sourceRef']), false, `没有出处却画出了出处｜实测条目文字：${text}`)
+  } finally {
+    STATE_PAYLOAD.memories = saved
+  }
+})
+
+await test('运行计数为 0 时必须明说「没在工作」，不许显示得像一切正常', async () => {
+  const saved = STATE_PAYLOAD.qualityStats
+  const cardText = () => allText(cardNodes(lastTree, dict.zh['quality.title'], 'quality'))
+  try {
+    STATE_PAYLOAD.qualityStats = { checks: 0, reminders: 0, suppressed: 0, skipped: {}, last: null }
+    // 只重渲染不够：store 还是上一次 loadState 的快照。必须真的重拉一次 state，
+    // 否则这条用例测的是「上一次的数据」，checks=0 这个分支永远走不到 —— 假通过。
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    assert.ok(
+      cardText().includes(dict.zh['quality.statsIdle']),
+      `checks=0 时没给出「这一整套没在工作」的提示；实际渲染：${cardText().slice(0, 320)}`
+    )
+  } finally {
+    STATE_PAYLOAD.qualityStats = saved
+  }
+  // 反之：有数据时不许还挂着那句提示，否则两次状态在界面上长得一样。
+  await controller.loadState()
+  renderFreshSettings()
+  await flush()
+  assert.equal(cardText().includes(dict.zh['quality.statsIdle']), false, '有数据了还在说「没在工作」')
+  assert.ok(cardText().includes('R02'), '有判词时没把判词显示出来')
+})
+
+await test('巡夜记录：从没跑过 ≠ 跑过没事，两者必须长得不一样', async () => {
+  const saved = STATE_PAYLOAD.patrolMeta
+  const cardText = () => allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+  try {
+    // ① 没有记录：必须明说「还没跑过」，绝不画成「没事」。
+    STATE_PAYLOAD.patrolMeta = null
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    assert.ok(
+      cardText().includes(dict.zh['patrol.never']),
+      `没有巡夜记录时没说明「没跑过」；实际渲染：${cardText().slice(0, 300)}`
+    )
+    assert.equal(
+      cardText().includes(dict.zh['patrol.silent']),
+      false,
+      '从没跑过却被画成了「跑过了、判为无事」——这是把未知当成结论'
+    )
+
+    // ② 跑过、判为无事、没汇报：必须写清是「跑过了」。
+    STATE_PAYLOAD.patrolMeta = {
+      at: '2026-10-23T15:00:00.000Z',
+      reported: false,
+      reasons: [],
+      facts: { pending: 0, flagged: 0, removed: 0 }
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    assert.ok(
+      cardText().includes(dict.zh['patrol.silent']),
+      `跑过但没汇报时没说清「跑过了」；实际渲染：${cardText().slice(0, 300)}`
+    )
+    assert.equal(cardText().includes(dict.zh['patrol.never']), false, '已经有记录了还在说「没跑过」')
+
+    // ③ 报过：必须显示「报过」而不是「无事」。
+    STATE_PAYLOAD.patrolMeta = {
+      at: '2026-10-23T15:00:00.000Z',
+      reported: true,
+      reasons: ['pending:2'],
+      facts: { pending: 2, flagged: 0, removed: 0 }
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    assert.ok(cardText().includes(dict.zh['patrol.reported']), '报过却显示成没报')
+  } finally {
+    STATE_PAYLOAD.patrolMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('巡夜明细：体检点到的问题必须逐条画出来，不能只给一个数字', async () => {
+  const saved = STATE_PAYLOAD.patrolMeta
+  const memText = () => allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+  try {
+    STATE_PAYLOAD.patrolMeta = {
+      at: '2026-10-23T15:00:00.000Z',
+      reported: true,
+      reasons: ['flagged:1'],
+      facts: { pending: 0, flagged: 1, removed: 0 },
+      checked: 21,
+      flaggedItems: [
+        {
+          id: 'm-abc',
+          detail: '记忆里写的路径「D:\\gone」现在已经不存在',
+          evidence: 'fs.existsSync("D:\\\\gone") === false',
+          kinds: ['path-missing']
+        }
+      ],
+      flaggedDropped: 0
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = memText()
+    // 数字说得出口、名字说不出口，等于半夜被告知「有 1 个问题」然后没了下文。
+    assert.ok(text.includes('D:\\gone'), `明细没被画出来；实际渲染：${text.slice(0, 400)}`)
+    assert.ok(text.includes('fs.existsSync'), '证据行也要画 —— 那是「凭什么说它有问题」的唯一凭据')
+    assert.ok(text.includes('/anima mark m-abc state=contradicted'), '每条要给出能直接粘贴处理的命令')
+    assert.ok(text.includes(dict.zh['patrol.details']), '明细区要有标题，不然一堆行不知道是什么')
+  } finally {
+    STATE_PAYLOAD.patrolMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('巡夜明细：没有明细时不许画出空的明细区', async () => {
+  const saved = STATE_PAYLOAD.patrolMeta
+  try {
+    STATE_PAYLOAD.patrolMeta = {
+      at: '2026-10-23T15:00:00.000Z',
+      reported: false,
+      facts: { pending: 0, flagged: 0, removed: 0 },
+      flaggedItems: null,
+      flaggedDropped: 0
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.equal(text.includes(dict.zh['patrol.details']), false,
+      '没有明细却画了明细标题 ⇒ 下面一片空白，看起来像渲染坏了')
+  } finally {
+    STATE_PAYLOAD.patrolMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('巡夜明细：被截断的条数必须说出来，不能静默只显示前 20 条', async () => {
+  const saved = STATE_PAYLOAD.patrolMeta
+  try {
+    STATE_PAYLOAD.patrolMeta = {
+      at: '2026-10-23T15:00:00.000Z',
+      reported: true,
+      facts: { pending: 0, flagged: 23, removed: 0 },
+      flaggedItems: [{ id: 'm-1', detail: '甲', evidence: 'e', kinds: ['verify-expired'] }],
+      flaggedDropped: 22
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(text.includes(dict.zh['patrol.moreDropped'].replace('{n}', '22')),
+      `截断了 22 条却没说；实际渲染：${text.slice(0, 400)}`)
+  } finally {
+    STATE_PAYLOAD.patrolMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('巡夜按钮：点了必须真的打到 /api/anima/patrol，且回执按真实形状读', async () => {
+  const before = patrolCalls.length
+  patrolCalls.length = before
+  renderFreshSettings()
+  await flush()
+  const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+  const buttons = elements(card, 'button').filter(
+    (node) => allText(walk(node, [])).trim() === dict.zh['patrol.run']
+  )
+  assert.ok(buttons.length > 0, '没有找到「跑一次巡夜」按钮')
+  buttons[0].props.onClick()
+  await flush()
+  assert.ok(patrolCalls.length > before, '点了巡夜按钮却没有发出请求（入口是死的）')
+  // delivered=0 时 toast 必须说「跑了但没汇报」，而不是「一切正常」。
+  // 这两句话在用户眼里差别就是「它活着」和「它说没事」。
+  // allText 只接受扁平节点数组（walk 的产物），直接喂根节点会报
+  // 「nodes.filter is not a function」——那看起来像实现坏了，其实是探针写错。
+  const toast = allText(walk(lastTree, []))
+  assert.ok(
+    toast.includes(dict.zh['patrol.toastSilent']),
+    `没汇报时没说清「跑过了但没报」；实际渲染：${toast.slice(0, 300)}`
+  )
+})
+
+// ==================== 分区导航（设置页改版） ====================
+//
+// 这一组用例存在的理由：改版前 55 项全绿，而它们一条都没有能力看见
+// 「卡片被藏起来了没有」—— cardNodes 只按 className === 'an-card' 匹配，
+// display:none 对它是透明的。也就是说「分区导航是死的」这种坏法，
+// 旧用例集一条也抓不住。下面每条断言都绕开这个盲点。
+//
+// ⚠️ 这一组有自己的坑，写第一版时踩了两次：
+// ① renderFreshSettings() 走 withOwnRuntime，它在 finally 里把模块级 lastTree
+//    还原成主运行时的树。于是「先 renderFreshSettings() 再读 lastTree」读到的
+//    是**别人的树**——主运行时里 agentName 早被前文改成「小沃」，脏检查恒为真，
+//    于是断言「干净态文案不对」，实际是读错了树。
+// ② 光拿到那棵树还不够：withOwnRuntime 返回后 runtimeRef.current 也还原了，
+//    此后点按钮触发的 setState 会渲染到**主运行时**上，看起来「点了没反应」。
+// 交互必须整段发生在 fresh 运行时still绑着的窗口里 ⇒ 用 withFreshSettings。
+
+/** 在一个独立运行时里跑完整个用例体：传进来的 view.tree 始终是这台运行时最新的树。 */
+function withFreshSettings(fn) {
+  return withOwnRuntime(
+    () => slotComponent({ ...injectProps, useAnimaStore: controller.useStore, t }),
+    (_tree, runtime) => fn({
+      // 每次点击后 runtime 同步重渲染，lastTree 立刻更新；
+      // 用 getter 而不是快照，避免调用方拿到过期的那棵树。
+      get tree() { return lastTree },
+      // effect 跑完之前的那一帧 —— 用户真正先看到的画面。
+      get firstFrame() { return runtime.api.lastFirstFrame }
+    })
+  )
+}
+
+/** 在一棵指定树上按分区标签点一下导航。找不到就抛，不静默通过。 */
+function switchSectionOn(tree, sectionKey) {
+  const label = dict.zh[`section.${sectionKey}`]
+  const tab = elements(walk(tree), 'button').find(
+    (node) => node.props.role === 'tab' && node.props.children === label
+  )
+  assert.ok(tab, `导航里没有「${label}」这一栏`)
+  tab.props.onClick()
+}
+
+/**
+ * 取某张卡片节点（不展开内容，只看它自己）。找不到返回 null。
+ *
+ * 与 cardNodes 同样先按 `data-an-card` 认卡：只按标题文字找会被「别处提到卡名」
+ * 骗到（本文件 2026-10-28 因此集体误判过一次）。
+ */
+function cardSection(tree, title, cardId) {
+  const sections = elements(walk(tree), 'section')
+  if (cardId) {
+    const byId = sections.find((node) => node.props?.['data-an-card'] === cardId)
+    if (byId) return byId
+  }
+  return sections.find((node) => {
+    const inner = []
+    walk(node.props?.children, inner)
+    return allText(inner).includes(title)
+  }) ?? null
+}
+
+await test('分区导航：五栏都在、名字走词典、当前栏标 aria-selected', () => {
+  withFreshSettings((view) => {
+    const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
+    assert.equal(tabs.length, 5, `应有五栏，实际 ${tabs.length}`)
+    const labels = tabs.map((n) => n.props.children)
+    for (const key of ['persona', 'preset', 'memory', 'behavior', 'advanced']) {
+      assert.ok(labels.includes(dict.zh[`section.${key}`]), `缺分区：${key}（实际 ${JSON.stringify(labels)}）`)
+    }
+    const on = tabs.filter((n) => n.props['aria-selected'] === 'true')
+    assert.equal(on.length, 1, `应恰好有一栏是选中态，实际 ${on.length}`)
+  })
+})
+
+await test('分区导航：切到「记忆」后，人设卡是 display:none —— 且内容没被销毁', () => {
+  withFreshSettings((view) => {
+    switchSectionOn(view.tree, 'memory')
+
+    // 人设卡此刻必须在树上（不是不渲染），但被藏起来。
+    const card = cardSection(view.tree, dict.zh['identity.title'], 'identity')
+    assert.ok(card, '切走之后人设卡整个从树上消失了 —— 未保存的输入会跟着丢')
+    assert.equal(card.props.style?.display, 'none', '切到记忆栏后，人设卡仍然可见')
+
+    // 反面：记忆卡此刻必须可见。
+    const memCard = cardSection(view.tree, dict.zh['mem.title'], 'mem')
+    assert.ok(memCard, '记忆卡不见了')
+    assert.notEqual(memCard.props.style?.display, 'none', '切到记忆栏后，记忆卡却是隐藏的')
+
+    // 内容真的还在（而不是只留了个空壳）：人设卡里的名字输入框还能查到。
+    const nameInput = elements(walk(view.tree), 'input').find((n) => n.props.id === 'an-agent-name')
+    assert.ok(nameInput, '人设卡被藏起来后，里面的表单整个没了 —— 用户切回来会看到空表单')
+  })
+})
+
+await test('分区导航：切换不留副作用 —— 在别的栏改的值不会因为切走而丢失', () => {
+  withFreshSettings((view) => {
+    switchSectionOn(view.tree, 'persona')
+    const before = elements(walk(view.tree), 'input').find((n) => n.props.id === 'an-agent-name')
+    before.props.onChange({ target: { value: '切栏测试' } })
+
+    switchSectionOn(view.tree, 'memory')
+    switchSectionOn(view.tree, 'persona')
+
+    const after = elements(walk(view.tree), 'input').find((n) => n.props.id === 'an-agent-name')
+    assert.equal(after.props.value, '切栏测试', '切走再切回来，刚敲的字没了')
+  })
+})
+
+await test('分区导航：选中的栏落 localStorage，且脏值一律回到第一栏', () => {
+  const KEY = 'dsh-anima:active-section'
+  try {
+    storageBacking.delete(KEY)
+    // 脏值：不存在的分区名 / 大小写不同 / 空串
+    for (const bad of ['没这个分区', 'Persona', '']) {
+      storageBacking.set(KEY, bad)
+      withFreshSettings((view) => {
+        const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
+        const on = tabs.filter((n) => n.props['aria-selected'] === 'true')
+        assert.equal(on.length, 1, `脏值 ${JSON.stringify(bad)} 之后选中数不对（${on.length}）`)
+        assert.equal(on[0].props.children, dict.zh['section.persona'], `脏值 ${JSON.stringify(bad)} 没退回第一栏`)
+      })
+    }
+    // 真值生效
+    storageBacking.set(KEY, 'behavior')
+    withFreshSettings((view) => {
+      const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
+      const on = tabs.filter((n) => n.props['aria-selected'] === 'true')
+      assert.equal(on[0].props.children, dict.zh['section.behavior'], '真值没被读进去')
+    })
+  } finally {
+    storageBacking.delete(KEY)
+  }
+})
+
+// 光测「读」不够：把 writeActiveSection 整句删掉，「五栏都在」「脏值回退」
+// 这些用例照样全绿（它们只依赖读初始值）。曾经就是这样——变异验证时
+// 删掉落盘那一行，失败项是 0。下面这条只测写。
+await test('分区导航：点一下必须真的把选中的栏写进 localStorage（不是只改内存）', () => {
+  const KEY = 'dsh-anima:active-section'
+  try {
+    storageBacking.delete(KEY)
+    withFreshSettings((view) => {
+      switchSectionOn(view.tree, 'behavior')
+      assert.equal(storageBacking.get(KEY), 'behavior', '点了「表现」却没写进 localStorage —— 下次打开又回到第一栏')
+      // 再点另一个，确认是覆盖而不是只在第一次写
+      switchSectionOn(view.tree, 'advanced')
+      assert.equal(storageBacking.get(KEY), 'advanced', '第二次切换没覆盖上一次的值')
+    })
+  } finally {
+    storageBacking.delete(KEY)
+  }
+})
+
+await test('保存栏：全页只剩一个「保存」按钮（卡片里的旧按钮必须全删掉）', () => {
+  withFreshSettings((view) => {
+    const saveLabel = dict.zh['common.save']
+    // 「保存覆盖」是工作区专用的另一个动作，文案不同，不算重复。
+    const saves = elements(walk(view.tree), 'button').filter(
+      (node) => String(node.props.children) === saveLabel
+    )
+    assert.equal(saves.length, 1, `页面上有 ${saves.length} 个「${saveLabel}」按钮，应当只有保存栏里那一个`)
+    // 它必须在保存栏里，而不是又藏回某张卡。
+    const inBar = elements(walk(view.tree), 'div').some((node) => {
+      if (node.props.className !== 'an-savebar') return false
+      const inner = []
+      walk(node.props.children, inner)
+      return elements(inner, 'button').some((b) => String(b.props.children) === saveLabel)
+    })
+    assert.ok(inBar, '唯一的保存按钮不在保存栏里')
+  })
+})
+
+await test('保存栏：干净时说「没有未保存的修改」，改了值就翻成「有未保存的修改」', () => {
+  withFreshSettings((view) => {
+    // ⚠️ 不能用 includes 判文案：清洁态是「没有未保存的修改」，脏态是
+    // 「有未保存的修改」，前者**包含**后者（「没」+ 脏态整句）。用 includes
+    // 写脏态断言，恒 dirty=false 的实现也能蒙混过关（变异验证时就是这么漏的）。
+    // 改成拿文案节点本身，判它的 class 与整串文本。
+    const barTextNode = () => {
+      const bar = elements(walk(view.tree), 'div').find((n) => n.props.className === 'an-savebar')
+      assert.ok(bar, '缺保存栏')
+      const inner = []
+      walk(bar.props.children, inner)
+      const node = elements(inner, 'div').find((n) =>
+        String(n.props.className || '').startsWith('an-savebar-text')
+      )
+      assert.ok(node, '保存栏里没有文案节点')
+      return { cls: node.props.className, text: allText(walk(node.props.children)).trim() }
+    }
+    // 干净：宿主配置与本地表单逐字节相等。此前这里恒为脏，
+    // 根因是 local 的初始值是一份空默认值而 config 已经到位 ——
+    // 首帧 dirty 为真，用户每次打开设置页都会看到保存按钮闪一下。
+    const clean = barTextNode()
+    assert.equal(clean.text, dict.zh['savebar.clean'], `干净态文案不对：${clean.text}`)
+    assert.equal(clean.cls, 'an-savebar-text', `干净态不该带警告色类名：${clean.cls}`)
+
+    const nameInput = elements(walk(view.tree), 'input').find((n) => n.props.id === 'an-agent-name')
+    nameInput.props.onChange({ target: { value: '改一下看看' } })
+    const dirtyText = barTextNode()
+    assert.equal(dirtyText.text, dict.zh['savebar.dirty'], `脏了之后文案没变：${dirtyText.text}`)
+    assert.equal(dirtyText.cls, 'an-savebar-text an-savebar-text-dirty', `脏态该带警告色：${dirtyText.cls}`)
+  })
+})
+
+// 首帧：真实 React 里 useEffect 要等首帧绘制之后才跑，所以用户**先看到**的
+// 是「effect 尚未执行」的那一帧。旧实现的 local 初始值是空默认值、config 已到位，
+// 于是每次打开设置页，保存栏先喊「有未保存的修改」、保存按钮亮着，然后才自己消失。
+// 抓这个缺陷必须看首帧 —— 等 effect 跑完，脏也就平了（变异验证时 0 项失败）。
+await test('保存栏：打开设置页的第一帧就是干净的（effect 跑之前不许闪一下脏）', () => {
+  withFreshSettings((view) => {
+    const frame = view.firstFrame
+    assert.ok(frame, '拿不到首帧')
+    const bar = elements(walk(frame), 'div').find((n) => n.props.className === 'an-savebar')
+    assert.ok(bar, '首帧里没有保存栏')
+    const inner = []
+    walk(bar.props.children, inner)
+    const node = elements(inner, 'div').find((n) =>
+      String(n.props.className || '').startsWith('an-savebar-text')
+    )
+    assert.ok(node, '首帧保存栏里没有文案节点')
+    assert.equal(
+      allText(walk(node.props.children)).trim(),
+      dict.zh['savebar.clean'],
+      `首帧已经是脏的（${allText(walk(node.props.children)).trim()}）—— 用户每次打开都会看到保存按钮闪一下`
+    )
+    // 保存按钮在第一帧就该是灰的：闪一下可点的「保存」比文案闪更糟。
+    const saveBtn = elements(inner, 'button').find(
+      (n) => String(n.props.children) === dict.zh['common.save']
+    )
+    assert.ok(saveBtn, '首帧保存栏里没有保存按钮')
+    assert.equal(saveBtn.props.disabled, true, '首帧的保存按钮不该是可点的')
+  })
+})
+
+// 探针自身的回归：cardNodes/cardSection 必须按 data-an-card 认卡。
+//
+// 这条用例锁的是一个已经真实发生过的翻车：把「助手身份」卡的说明改成
+// 「…也看不到长期记忆。」之后，13 条记忆相关用例集体报「记忆卡里没有 X」，
+// 代码一行没坏 —— 是探针按标题文字找卡、先撞上了人设卡。
+// 造两棵假树形状：第一张卡（identity）的正文里故意写着另一张卡（mem）的标题。
+await test('测试探针：一张卡里提到另一张卡的名字时，cardNodes/cardSection 不许认错卡', () => {
+  const memTitle = dict.zh['mem.title']
+  const fake = {
+    type: 'div',
+    props: {
+      children: [
+        {
+          type: 'section',
+          props: {
+            className: 'an-card',
+            'data-an-card': 'identity',
+            children: [{ type: 'p', props: { children: `关掉后…也看不到${memTitle}。` } }]
+          }
+        },
+        {
+          type: 'section',
+          props: {
+            className: 'an-card',
+            'data-an-card': 'mem',
+            children: [{ type: 'p', props: { children: '记忆卡正文' } }]
+          }
+        }
+      ]
+    }
+  }
+
+  const nodes = cardNodes(fake, memTitle, 'mem')
+  const text = allText(nodes)
+  assert.ok(text.includes('记忆卡正文'), `cardNodes 认错卡了：拿到 ${JSON.stringify(text)}`)
+  assert.ok(!text.includes('关掉后'), `cardNodes 撞上了写着「${memTitle}」的那张卡`)
+
+  const section = cardSection(fake, memTitle, 'mem')
+  assert.ok(section, 'cardSection 没找到记忆卡')
+  assert.equal(section.props['data-an-card'], 'mem', 'cardSection 认错卡了')
+
+  // 兜底路径仍要能用：没给 id 时退回按标题文字找（只有一张卡提到标题，能找到）。
+  const fallback = allText(cardNodes(fake, memTitle))
+  assert.ok(fallback.includes('关掉后'), '没给 id 时的兜底查找失效了')
+})
+
+// ---- 录屏回归：这三条来自用户 2026-10-30 的屏幕录像 ----
+// 那支录像推翻了我此前「点标签没反应」的全部猜测：标签点得动、state 也写了，
+// 但（①）选中态看不出来、（②）顶部变更记录默认铺满整屏把卡片挤到屏外、
+// （③）底部保存栏与「只保留最近 200 条」那行字叠在一起。
+// 三条各写一条用例 —— 它们都是「代码没错、但人看不见」的故障，只能靠渲染结果抓。
+
+await test('分区标签：选中态必须与未选中态有可见差异（不能只是同一个底色）', () => {
+  // 原来 `.an-sectnav-tab-on` 用 --dsw-alias-bg-base 当背景，那是页面自身底色，
+  // 垫在 layer-1 上等于没变 ⇒ 五个标签一个都看不出被选中。
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  const rule = css.match(/\.an-sectnav-tab-on\{([^}]*)\}/)
+  assert.ok(rule, '找不到 .an-sectnav-tab-on 规则')
+  assert.equal(
+    /background:var\(--dsw-alias-bg-base\b/.test(rule[1]), false,
+    '选中态又拿页面底色当背景了 —— 那样在页面上看不出来被选中'
+  )
+  // 选中的那个标签节点本身要带标记，且 aria-selected 只在一个上。
+  // 注意：byClass 是精确相等匹配，而选中态的 className 是
+  // `an-sectnav-tab an-sectnav-tab-on` 两段，所以这里必须按前缀筛。
+  const tabs = walk(lastTree).filter(
+    (n) => n.kind === 'element' && /(^|\s)an-sectnav-tab(\s|$)/.test(String(n.props?.className ?? ''))
+  )
+  assert.equal(tabs.length, 5, `分区标签应有 5 个（实际 ${tabs.length}）`)
+  const on = tabs.filter((n) => String(n.props.className).includes('an-sectnav-tab-on'))
+  assert.equal(on.length, 1, `应恰好一个标签处于选中态（实际 ${on.length}）`)
+  assert.equal(on[0].props['aria-selected'], 'true')
+})
+
+await test('最近改了什么：收起态一行明细都不画，长值根本没有出场机会', async () => {
+  // 用户录屏里一条改动的原值 1435 字，渲染成十几行占满整屏，
+  // 把下面本该显示的人设卡整个挤出屏幕 —— 看起来就像「点了标签没反应」。
+  // 现在更进一步：收起态连预览都不画了，所以这条断言从「只画 2 条」变成「一条不画」。
+  const saved = STATE_PAYLOAD.audit
+  const long = '这是一段很长很长的自定义指令'.repeat(60)
+  try {
+    STATE_PAYLOAD.audit = {
+      total: 1,
+      max: 200,
+      entries: [{
+        id: 'a-long',
+        at: '2026-10-30T08:00:00.000Z',
+        actor: 'user',
+        source: 'settings',
+        changes: [
+          { key: 'customInstructions', from: long, to: long },
+          { key: 'style', from: 'a'.repeat(500), to: 'b'.repeat(500) },
+          { key: 'agentRole', from: 'c'.repeat(500), to: 'd'.repeat(500) }
+        ]
+      }],
+      sourceText: { settings: '设置页' }
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+
+    const recent = byClass(walk(lastTree), 'an-recent')[0]
+    assert.ok(recent, '找不到顶部常驻的改动记录')
+    assert.equal(byClass(walk(recent), 'an-audit-change').length, 0, '收起态还在画明细')
+    const text = allText(walk(recent))
+    assert.equal(text.includes(long), false, '收起态把 700 多字的原值整段画了出来')
+    // 但条数还得在，否则用户不知道值不值得点开
+    assert.ok(text.includes(`${dict.zh['audit.total']} 1`), `收起态没告诉用户有多少条：${text.slice(0, 200)}`)
+  } finally {
+    STATE_PAYLOAD.audit = saved
+  }
+})
+
+await test('最近改了什么：收起态不再常驻「只保留最近 200 条」那句说明', async () => {
+  // 那句是解释，不是内容。它常驻在顶部既占地方，又与底部保存栏叠在一起。
+  await controller.loadState()
+  renderFreshSettings()
+  await flush()
+  const recent = byClass(walk(lastTree), 'an-recent')[0]
+  assert.ok(recent, '找不到顶部常驻的改动记录')
+  assert.equal(
+    allText(walk(recent)).includes(dict.zh['audit.maxHint']), false,
+    '收起态仍把「只保留最近 200 条」画在顶部——那是展开看全量时才需要知道的'
+  )
 })
 
 console.log(`\n通过 ${passed} 项`)

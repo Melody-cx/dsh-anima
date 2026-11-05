@@ -76,8 +76,10 @@ function makeStorageDomain(seed = null, mediumVersion = null) {
         throw err
       }
       const tables = new Map()
+      const schemas = new Map()
       for (const name of Object.keys(spec.tables)) {
         tables.set(name, new Map(seed?.[name] ?? []))
+        schemas.set(name, spec.tables[name]?.valueSchema)
       }
       domains.set(spec.name, { version: spec.version, tables })
       return {
@@ -85,9 +87,19 @@ function makeStorageDomain(seed = null, mediumVersion = null) {
         version: spec.version,
         table(name) {
           const store = tables.get(name)
+          const schema = schemas.get(name)
           if (!store) throw new Error(`domain '${spec.name}' has no table '${name}'`)
           return {
-            get: (key) => store.get(key),
+            // 读回时过一遍 schema —— 真实后端就是这么做的。不这么做的话，
+            // 「schema 少声明一个键 ⇒ 数据读回被 zod 静默剥空」这类 bug 在这套
+            // 冒烟测试里完全不可见：写入照落盘，读出来的却是 stripped 版本，
+            // 而假域原样返回，测试全绿。2026-10-24 的 metaSchema bug 就是靠
+            // verify-core 里那个单独的 makeValidatingDomain 才抓到的。
+            get: (key) => {
+              const raw = store.get(key)
+              if (raw === undefined) return undefined
+              return schema ? schema.parse(raw) : raw
+            },
             put: async (key, value) => { store.set(key, value) },
             delete: async (key) => store.delete(key),
             entries: () => store.entries(),
@@ -133,6 +145,10 @@ function makeCtx(home, { withStorage = true } = {}) {
   const provided = new Map()
   const warnings = []
   const pendingInjects = []
+  // 事件处理器登记表：`on(name, handler, opts)` 收进来，测试里手动派发。
+  // 之前这里是 `on: () => () => {}`（什么都不记），后果是「注册了钩子」这件事
+  // 永远测不到 —— 钩子写错名字、或压根没注册，冒烟照样全绿。
+  const handlers = new Map()
 
   // 假 Agent 列表：`agents.list()` 返回它们，`.inject(message)` 把消息收进 inbox。
   // 「配置变更后向活动会话说明旧设定作废」这条链路要靠它才测得到。
@@ -233,7 +249,27 @@ function makeCtx(home, { withStorage = true } = {}) {
     },
     _services: services,
     _pendingInjects: pendingInjects,
-    on: () => () => {},
+    on: (eventName, handler) => {
+      if (!handlers.has(eventName)) handlers.set(eventName, [])
+      handlers.get(eventName).push(handler)
+      return () => {
+        const list = handlers.get(eventName) ?? []
+        const at = list.indexOf(handler)
+        if (at >= 0) list.splice(at, 1)
+      }
+    },
+    /** 测试用：按事件名派发一次 waterfall，语义与 cordis 一致（回调收到 next）。 */
+    _emitWaterfall: async (eventName, payload, terminal) => {
+      const list = [...(handlers.get(eventName) ?? [])]
+      let index = -1
+      const run = async () => {
+        index += 1
+        if (index >= list.length) return terminal()
+        return list[index](payload, run)
+      }
+      return run()
+    },
+    _handlerCount: (eventName) => (handlers.get(eventName) ?? []).length,
     _agents: agents,
     _makeAgent: makeAgent,
     _sections: sections,
@@ -307,10 +343,162 @@ await test('三段 systemPrompt section 均注册，名字与 order 正确', () 
   assert.equal(typeof identity.text, 'function', 'section.text 应为函数（动态求值）')
 })
 
+// ---- 质检层：pre-step 机制检查 ----
+//
+// 这一组的价值在于「检查者不是模型」：假 ctx 手动派发 agent/pre-step，
+// 插件必须自己从 session.snapshotEvents() 里找上一条 assistant 回答并判定。
+// 如果只用提示词而不测这里，钩子写错事件名、或压根没注册，冒烟测试仍然全绿。
+
+await test('agent/pre-step 钩子已注册（不是只写在提示词里）', () => {
+  assert.equal(ctx._handlerCount('agent/pre-step'), 1, '未注册 pre-step 钩子，机制检查等于不存在')
+})
+
+await test('质检段排在待审段之后、PLAN_POLICY(500) 之前', () => {
+  const quality = ctx._sections.get('anima:quality')
+  assert.ok(quality, '质检段缺失')
+  assert.equal(quality.order, 30)
+  assert.ok(quality.order > ctx._sections.get('anima:pending').order)
+  assert.ok(quality.order < 500)
+  const text = quality.text({})
+  assert.match(text, /十二条/, '质检段应列出十二条判据')
+  assert.match(text, /对账/, '质检段应含对账规则')
+  assert.match(text, /不是你自己/, '质检段必须说明检查由代码做，不是模型自评')
+})
+
+/** 造一个带 session 的假 agent：snapshotEvents() 返回给定事件列表。 */
+function agentWith(events) {
+  return { session: { snapshotEvents: () => events } }
+}
+
+const assistantEvent = (text, seq = 7) => ({
+  type: 'assistant/message',
+  seq,
+  // 真实形状（实测自 C:\Users\10933\.dsh\sessions\...\session.v4.jsonl.zstd）：
+  // data = { turn, step, message:{role,content,source,id}, usage, stream }
+  // 夹具必须照抄现实而不是照抄实现，否则实现读错了字段，测试跟着一起错还全绿。
+  data: {
+    turn: 1,
+    step: 1,
+    message: { role: 'assistant', content: [{ type: 'text', text }], source: { kind: 'assistant' }, id: `msg-${seq}` }
+  }
+})
+
+const enterDecision = (messages = []) => () => Promise.resolve({ kind: 'enter', messages })
+
+await test('上一轮回答里有未对账的断言 → 下一步追加一条提醒', async () => {
+  const agent = agentWith([assistantEvent('据官方文档可知，这个接口限流是每分钟 60 次。')])
+  const decision = await ctx._emitWaterfall(
+    'agent/pre-step',
+    { agent, step: 1, turn: 1 },
+    enterDecision([{ role: 'user', content: [{ type: 'text', text: '你好' }] }])
+  )
+  assert.equal(decision.kind, 'enter')
+  assert.equal(decision.messages.length, 2, '应在原有消息后追加一条提醒')
+  const injected = decision.messages[1]
+  assert.equal(injected.source.kind, 'plugin:dsh-anima', '注入消息必须自持 producer kind')
+  assert.equal(injected.source.form, 'snapshot', '不能伪装成用户发言')
+  assert.match(injected.content[0].text, /R02|R01/, '提醒里应点名机器判到的规则')
+  assert.match(injected.content[0].text, /这次没查/, '提醒必须如实列出没查的规则')
+})
+
+await test('回答干净时不注入任何消息（不夸奖、不刷存在感）', async () => {
+  const agent = agentWith([assistantEvent('这个函数在 lib/store.mjs:59 定义，只有一行赋值。')])
+  const decision = await ctx._emitWaterfall(
+    'agent/pre-step',
+    { agent, step: 1, turn: 1 },
+    enterDecision([{ role: 'user', content: [{ type: 'text', text: '在哪' }] }])
+  )
+  assert.equal(decision.messages.length, 1, '干净的回答不该被追加任何提醒')
+})
+
+await test('同一条回答不重复提醒两次（否则会把下一轮挤满）', async () => {
+  const event = assistantEvent('我会持续关注这个问题的后续变化。', 99)
+  const agent = agentWith([event])
+  const first = await ctx._emitWaterfall('agent/pre-step', { agent, step: 1, turn: 1 }, enterDecision([]))
+  assert.equal(first.messages.length, 1)
+  const second = await ctx._emitWaterfall('agent/pre-step', { agent, step: 1, turn: 2 }, enterDecision([]))
+  assert.equal(second.messages.length, 0, '同一条回答被检查过就不该再提醒')
+})
+
+await test('链路 reject 时原样透传，不再追加消息', async () => {
+  const agent = agentWith([assistantEvent('据文档说，这个值等于 3。')])
+  const decision = await ctx._emitWaterfall(
+    'agent/pre-step',
+    { agent, step: 1, turn: 1 },
+    () => Promise.resolve({ kind: 'reject' })
+  )
+  assert.equal(decision.kind, 'reject')
+  assert.equal(decision.messages, undefined)
+})
+
+await test('session 没有 snapshotEvents（旧宿主/非 agent 场景）时安静跳过', async () => {
+  const decision = await ctx._emitWaterfall(
+    'agent/pre-step',
+    { agent: { session: {} }, step: 1, turn: 1 },
+    enterDecision([])
+  )
+  assert.equal(decision.kind, 'enter')
+  assert.equal(decision.messages.length, 0)
+})
+
+await test('同一轮内提醒次数到顶就停（防止机制把自己拉成死循环）', async () => {
+  // 每一句都命中，但每句的 seq 不同 —— 单看「同一条不重复」抓不住自激，
+  // 因为自激正是「不断产生新的不合格回答」。这条用例守的是配额闸门。
+  const sessionsTexts = [
+    '据官方文档可知，这个接口限流是每分钟 60 次。',
+    '据官方文档可知，这个值等于 3。',
+    '据官方文档可知，这个值等于 4。',
+    '据官方文档可知，这个值等于 5。'
+  ]
+  const sess = { snapshotEvents: () => [] }
+  const agent = { session: sess }
+  const injected = []
+  for (let i = 0; i < sessionsTexts.length; i += 1) {
+    sess.snapshotEvents = () => [assistantEvent(sessionsTexts[i], 100 + i)]
+    const d = await ctx._emitWaterfall('agent/pre-step', { agent, step: 1, turn: 7 }, enterDecision([]))
+    injected.push(d.messages.length)
+  }
+  assert.deepEqual(injected, [1, 1, 0, 0], `同一轮最多提醒 2 次，实际 ${JSON.stringify(injected)}`)
+
+  // 关键区分：被闸门挡掉的第三、第四句**也必须被检查过**。
+  // 早期版本把额度判断放在检查之前，那两句压根没进 checkResponse，
+  // 于是「这轮有几条该提醒而没提醒」永远没有答案 —— 那正是「没查」长得像「查过没事」。
+  const stats = (await callRoute(ctx._routes.get('/api/anima/state'))).payload.qualityStats
+  assert.equal(typeof stats.suppressed, 'number', 'state 里必须下发 suppressed')
+  assert.ok(stats.suppressed >= 2, `被闸门压住的次数要单独计数，实际 ${stats.suppressed}`)
+  assert.ok((stats.skipped['turn-budget'] ?? 0) >= 2, '按原因分类里也要能看到「额度用完」')
+
+  // 换轮要回满：否则第二条轮次就再也收不到提醒，等于静默失效
+  sess.snapshotEvents = () => [assistantEvent('据官方文档可知，这个值等于 6。', 200)]
+  const nextTurn = await ctx._emitWaterfall('agent/pre-step', { agent, step: 1, turn: 8 }, enterDecision([]))
+  assert.equal(nextTurn.messages.length, 1, '换轮必须重新给配额')
+})
+
 await test('section 名未与 dsh-soul 的 soul:persona 冲突', () => {
   assert.equal(ctx._sections.has('soul:persona'), false)
 })
 
+await test('运行计数能把「查了没事」和「压根没跑」分开（这是不许谎报检查的落地）', async () => {
+  const before = (await callRoute(ctx._routes.get('/api/anima/state'))).payload.qualityStats
+  assert.equal(typeof before.checks, 'number', 'state 里必须下发 checks')
+
+  const agent = agentWith([assistantEvent('据官方文档可知，这个值等于 9。', 301)])
+  await ctx._emitWaterfall('agent/pre-step', { agent, step: 1, turn: 3 }, enterDecision([]))
+
+  const after = (await callRoute(ctx._routes.get('/api/anima/state'))).payload
+  assert.equal(after.qualityStats.checks, before.checks + 1, '真正跑过一次判定的次数必须 +1')
+  assert.ok(after.qualityStats.last, '最近一次判定摘要必须留下痕迹')
+  assert.equal(after.qualityStats.last.seq, 301, '痕迹必须指向被检查的那一条事件')
+  assert.ok(Array.isArray(after.qualityStats.last.findings), '必须记录判到了哪些规则')
+
+  // 关键：只带工具调用的空文本消息必须记成 skip，不能记成 check。
+  // 否则「查了很多次」里会混进「其实没查」，用户就无法用它判断钩子是否真的在工作。
+  const emptyAgent = agentWith([{ type: 'assistant/message', seq: 302, data: { content: [] } }])
+  await ctx._emitWaterfall('agent/pre-step', { agent: emptyAgent, step: 1, turn: 4 }, enterDecision([]))
+  const afterEmpty = (await callRoute(ctx._routes.get('/api/anima/state'))).payload.qualityStats
+  assert.equal(afterEmpty.checks, after.qualityStats.checks, '空文本不该被算成一次检查')
+  assert.ok((afterEmpty.skipped['empty-text'] ?? 0) > 0, '空文本必须落进 skip 并带原因')
+})
 await test('HTTP 路由注册齐全', () => {
   // 刻意不钉总数：每加一条路由都要回来改数字，而这条用例想证明的只是「路由都注册上了」。
   const expected = [
@@ -395,6 +583,41 @@ await test('只改不影响提示词的字段时一声不吭（否则每点一�
   })
   assert.equal(status, 200)
   assert.equal(agent.inbox.length, 0, '光轨颜色不影响注入文本，不该打扰会话')
+})
+
+// 这条对应一个真实观察：我在设置页把「对账档位」从 three 改成 five，宿主发来的通知
+// 开头写的是「助手人格设定刚有更新」。改的是质检判据，不是我是谁 —— 标题就在说谎。
+// 标题说真话不是措辞洁癖：这条通知的第一句话会被模型和用户同时读到，它一旦扭曲，
+// 后面「变更字段：质检设置（ledgerLevel）」写得再准也救不回来。
+await test('只改质检设置时，通知开头不能说成「人格设定更新了」', async () => {
+  const agent = ctx._makeAgent('会话戊')
+  ctx._agents.push(agent)
+  const { status } = await callRoute(ctx._routes.get('/api/anima/config'), {
+    method: 'POST',
+    body: { quality: { enabled: true, ledgerLevel: 'five', strict: true, preStepCheck: true, maxFindingsInReminder: 5 } }
+  })
+  assert.equal(status, 200)
+  assert.equal(agent.inbox.length, 1, '质检设置进了提示词，该通知')
+  const text = agent.inbox[0].content[0].text
+  assert.ok(!/人格/.test(text), `只改质检却说了「人格」：${text.split('\n')[0]}`)
+  assert.match(text, /质检设置/, '要念出变更字段，证明它知道改的是什么')
+  assert.match(text, /不再适用/, '仍然要说明旧值作废')
+})
+
+await test('同时改人设与质检时，标题两种都提到（不能漏掉人设那半边）', async () => {
+  const agent = ctx._makeAgent('会话己')
+  ctx._agents.push(agent)
+  const { status } = await callRoute(ctx._routes.get('/api/anima/config'), {
+    method: 'POST',
+    body: {
+      agentName: '小沃二号',
+      quality: { enabled: true, ledgerLevel: 'three', strict: true, preStepCheck: true, maxFindingsInReminder: 5 }
+    }
+  })
+  assert.equal(status, 200)
+  const text = agent.inbox.at(-1).content[0].text
+  assert.match(text, /人格/, '含人设字段时必须提人格')
+  assert.match(text, /提示词/, '同时要说明还改了别的提示词设定')
 })
 
 await test('人设工具不叫 set_persona（避开 dsh-soul 的重名冲突）', () => {
@@ -496,6 +719,29 @@ await test('remember 工具拒绝凭据且不落盘', async () => {
 
 await test('对外服务 animaConfig 已提供', () => {
   assert.ok(ctx._provided.has('animaConfig'))
+})
+
+// 质检段曾经被抄了三处：提示词 section、getSystemPrompt、/api/anima/preview。
+// 抄成三份的直接后果已经发生过一次 —— preview 那份漏掉了末尾「关于上一段怎么被检查」
+// 的三小节，于是同一个问题对外的三个答案里有一个是残缺的。
+// 这条测试锁住「三处必须是同一段文本」，谁再手抄一份就会红。
+await test('质检段的三个出口必须逐字相同（提示词 section / getSystemPrompt / preview）', async () => {
+  const sectionText = ctx._sections.get('anima:quality').text({})
+  assert.ok(sectionText.length > 0, '提示词质检段不该为空')
+
+  const service = ctx._provided.get('animaConfig')
+  const systemPrompt = await service.getSystemPrompt(undefined)
+  assert.ok(
+    systemPrompt.includes(sectionText),
+    'getSystemPrompt 里的质检段必须与提示词 section 逐字相同（不得各自拼一份）'
+  )
+
+  const { payload } = await callRoute(ctx._routes.get('/api/anima/preview'))
+  assert.equal(
+    payload.sections.quality,
+    sectionText,
+    'preview 的质检段必须与提示词 section 逐字相同（漏内容就等于对外保证了一份没注入的文本）'
+  )
 })
 
 await test('/state 下发档位文案与示例两组表，且不含空档位', async () => {
@@ -660,6 +906,73 @@ await test('没有提议时 confirm 返回 404（不假装成功）', async () =
   assert.equal(status, 404)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /没有待确认/)
+})
+
+await test('/anima audit 当场重算机器判词，并如实列出没查什么', async () => {
+  const command = ctx._commands.find((c) => c.name === 'anima')
+
+  // 会话里没有回答时不能假装检查过
+  const emptyAgent = { session: { snapshotEvents: () => [] } }
+  const empty = await command.handler({ rawInput: 'audit', agent: emptyAgent })
+  assert.equal(empty.kind, 'success')
+  assert.match(empty.text, /还没有助手回答/)
+
+  // 读不到消息记录时必须报错，而不是回一句「没问题」
+  const blind = await command.handler({ rawInput: 'audit', agent: { session: {} } })
+  assert.equal(blind.kind, 'error')
+  assert.match(blind.text, /无法检查/)
+
+  // 有问题的回答：必须报出规则、原文摘录、并列出未查清单
+  const dirty = {
+    session: {
+      snapshotEvents: () => [{
+        type: 'assistant/message',
+        seq: 42,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '据官方文档可知，这个接口限流是每分钟 60 次。我会持续关注。' }],
+            source: { kind: 'assistant' },
+            id: 'msg-42'
+          }
+        }
+      }]
+    }
+  }
+  const bad = await command.handler({ rawInput: 'audit', agent: dirty })
+  assert.equal(bad.kind, 'success')
+  assert.match(bad.text, /事件 seq=42/, '必须指出查的是哪一条，否则无法复核')
+  assert.match(bad.text, /R0[19]|R02/, '要报出命中的规则号')
+  assert.match(bad.text, /原文：/, '要带可核对的原文摘录')
+  assert.match(bad.text, /本次未查：/, '必须列出机器判不了的项')
+  assert.match(bad.text, /不经过模型/, '必须说明结论来自代码，不是自评')
+
+  // 干净的回答：允许说「没抓到问题」，但**必须**同时说不等于内容正确、不等于十二条全过
+  const clean = {
+    session: {
+      snapshotEvents: () => [{
+        type: 'assistant/message',
+        seq: 43,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: '这个常量定义在 lib/store.mjs:59，只有一行赋值。' }],
+            source: { kind: 'assistant' },
+            id: 'msg-43'
+          }
+        }
+      }]
+    }
+  }
+  const good = await command.handler({ rawInput: 'audit', agent: clean })
+  assert.equal(good.kind, 'success')
+  assert.match(good.text, /没抓到问题/)
+  assert.match(good.text, /不等于内容正确/, '干净时必须声明这不等于正确 —— 否则该命令自己就成了表演面')
+  assert.match(good.text, /本次未查：/)
 })
 
 await test('命令 /anima confirm 与 reject 与 HTTP 路由同语义', async () => {
@@ -860,6 +1173,151 @@ await test('含凭据的记忆被拒收', async () => {
   assert.match(add.payload.error, /凭据/)
 })
 
+await test('回填元数据：改一条已采纳记忆的 type，正文与裁决状态一个字不动', async () => {
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const target = state.payload.memories.adopted.find((m) => m.text === '用户偏好结论先行')
+  assert.ok(target, '前置条件：上一条用例已把这条采纳')
+  const before = { text: target.text, status: target.status, capturedAt: target.capturedAt }
+
+  const meta = await callRoute(ctx._routes.get('/api/anima/memory/meta'), {
+    method: 'POST',
+    body: { id: target.id, type: 'preference', sourceRef: 'm00123' }
+  })
+  assert.equal(meta.status, 200)
+  assert.deepEqual(meta.payload.changed.sort(), ['sourceRef', 'type'])
+
+  const after = await callRoute(ctx._routes.get('/api/anima/state'))
+  const reloaded = after.payload.memories.adopted.find((m) => m.id === target.id)
+  assert.ok(reloaded, '改元数据不许把条目弄丢')
+  assert.equal(reloaded.type, 'preference')
+  assert.equal(reloaded.sourceRef, 'm00123')
+  // 三个不许动的字段逐个钉：正文改了就等于伪造用户说过的话，
+  // status 改了等于替用户重新裁决，capturedAt 改了等于伪造时间线。
+  assert.equal(reloaded.text, before.text)
+  assert.equal(reloaded.status, before.status)
+  assert.equal(reloaded.capturedAt, before.capturedAt)
+})
+
+await test('回填元数据：写同样的值回 changed 为空，不谎报「已更新」', async () => {
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const target = state.payload.memories.adopted.find((m) => m.type === 'preference')
+  assert.ok(target, '前置条件：上一条用例已写入 type')
+  const same = await callRoute(ctx._routes.get('/api/anima/memory/meta'), {
+    method: 'POST',
+    body: { id: target.id, type: 'preference' }
+  })
+  assert.equal(same.status, 200)
+  assert.deepEqual(same.payload.changed, [], '没变化就必须回空数组，界面据此不显示「已保存」')
+})
+
+await test('回填元数据：找不到的 id 必须 404，不能静默成功', async () => {
+  const missing = await callRoute(ctx._routes.get('/api/anima/memory/meta'), {
+    method: 'POST',
+    body: { id: 'm-does-not-exist', type: 'fact' }
+  })
+  assert.equal(missing.status, 404)
+  assert.match(missing.payload.error, /找不到/)
+})
+
+await test('批量回填：逐条回执里能看出哪条成功、哪条为什么失败', async () => {
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const one = state.payload.memories.adopted[0]
+  assert.ok(one, '前置条件：缓冲区里至少有一条已采纳记忆')
+  const batch = await callRoute(ctx._routes.get('/api/anima/memory/meta/batch'), {
+    method: 'POST',
+    body: {
+      items: [
+        { id: one.id, type: 'fact' },
+        { id: 'm-missing', type: 'fact' },
+        { id: one.id, verifyAt: '2020-01-01' }
+      ]
+    }
+  })
+  assert.equal(batch.status, 200)
+  assert.equal(batch.payload.total, 3)
+  // 关键：失败项必须带原因。只回「成功 1 条」的话，用户无法区分
+  // 「这条本来就不用改」和「这条根本改不了」。
+  assert.equal(batch.payload.results[1].ok, false)
+  assert.match(batch.payload.results[1].error, /找不到/)
+  assert.equal(batch.payload.results[2].ok, false)
+  assert.match(batch.payload.results[2].error, /已经过去/)
+})
+
+await test('状态机：supersededBy 走路由时自动落 superseded，指向不存在的 id 必须报错', async () => {
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const target = state.payload.memories.adopted.find((m) => m.type === 'preference')
+  assert.ok(target, '前置条件：前面的用例已写入 type')
+
+  const bogus = await callRoute(ctx._routes.get('/api/anima/memory/meta'), {
+    method: 'POST',
+    body: { id: target.id, supersededBy: 'm-nope' }
+  })
+  // 存在性由路由查（只有它拿得到 store）。这条必须有 400：
+  // 记下一个指向空气的指针，比不记更坏 —— 将来无法顺着它找到「后来那条」。
+  assert.equal(bogus.status, 400)
+  assert.match(bogus.payload.error, /不存在/)
+
+  // 用命令行做真正合法的那一次：指向一条真实存在的记录。
+  const command = ctx._commands.find((c) => c.name === 'anima')
+  const missing = await command.handler({ rawInput: `mark ${target.id} supersededBy=m-ghost` })
+  assert.equal(missing.kind, 'error')
+  assert.match(missing.text, /不存在/, '指向空气的指针必须挡下来，否则将来无法顺着它找到「后来那条」')
+
+  const other = state.payload.memories.pending[0] ?? state.payload.memories.adopted.find((m) => m.id !== target.id)
+  assert.ok(other, '前置条件：需要另一条记忆当取代者')
+  const marked = await command.handler({ rawInput: `mark ${target.id} supersededBy=${other.id}` })
+  assert.equal(marked.kind, 'success')
+  assert.match(marked.text, /state/, '标取代关系必须同时把状态改成 superseded')
+
+  const after = await callRoute(ctx._routes.get('/api/anima/state'))
+  const reloaded = after.payload.memories.adopted.find((m) => m.id === target.id)
+  assert.equal(reloaded.supersededBy, other.id)
+  assert.equal(reloaded.state, 'superseded')
+  // 渲染层必须把「曾如此」写进注入行，否则状态标了但读的人看不出来。
+  const memoryText = ctx._sections.get('anima:memory').text({})
+  assert.match(memoryText, /曾如此/, 'superseded 的条目注入时必须带「曾如此」，否则会被当成此刻仍成立')
+
+  // 清回 current 时指针要一起清，不留两种结论并存的一行
+  const back = await command.handler({ rawInput: `mark ${target.id} state=current` })
+  assert.equal(back.kind, 'success')
+  const final = await callRoute(ctx._routes.get('/api/anima/state'))
+  const cleared = final.payload.memories.adopted.find((m) => m.id === target.id)
+  assert.equal(cleared.state, 'current')
+  assert.equal('supersededBy' in cleared, false)
+})
+
+await test('记忆体检：只报机械能验的，报告里不许出现「自动改正」这类动作', async () => {
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/memory/audit'))
+  assert.equal(status, 200)
+  assert.equal(payload.ok, true)
+  assert.equal(typeof payload.checked, 'number')
+  assert.equal(Array.isArray(payload.flagged), true)
+  // 自我约束：这个接口只能读，不能改。拿改前改后的 state 比对来证明，
+  // 而不是靠「我没写 putMemory」这句话。
+  const before = await callRoute(ctx._routes.get('/api/anima/state'))
+  await callRoute(ctx._routes.get('/api/anima/memory/audit'))
+  const after = await callRoute(ctx._routes.get('/api/anima/state'))
+  const strip = (s) => JSON.stringify(s.payload.memories.adopted.map((m) => [m.id, m.state ?? null, m.type ?? null]))
+  assert.equal(strip(after), strip(before), '体检不许顺手改状态：扫描可以自动，裁决必须由用户点')
+  assert.match(payload.note, /不判/, '报告必须自己说清哪一半它判不了')
+})
+
+await test('/anima checkup：体检只读、逐条给证据与可直接执行的命令', async () => {
+  const command = ctx._commands.find((c) => c.name === 'anima')
+  const before = await callRoute(ctx._routes.get('/api/anima/state'))
+  const result = await command.handler({ rawInput: 'checkup' })
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /记忆体检/)
+  assert.match(result.text, /条要你看一眼/)
+  // 只说数字不够：必须把「哪一半它判不了」写在同一段里，
+  // 否则用户会把体检结果当成「这些话仍然成立」。
+  assert.match(result.text, /不判|不说明这些话现在仍然成立/)
+  assert.match(result.text, /不会改任何状态/)
+  const after = await callRoute(ctx._routes.get('/api/anima/state'))
+  const strip = (s) => JSON.stringify(s.payload.memories.adopted.map((m) => [m.id, m.state ?? null]))
+  assert.equal(strip(after), strip(before), '体检不许顺手改状态')
+})
+
 await test('整理接口可调用并返回 summary', async () => {
   const { status, payload } = await callRoute(ctx._routes.get('/api/anima/memory/triage'), {
     method: 'POST',
@@ -870,6 +1328,145 @@ await test('整理接口可调用并返回 summary', async () => {
   assert.ok(payload.summary, '缺 summary')
   assert.ok(typeof payload.summary.pendingAfter === 'number')
 })
+
+await test('巡夜：真的没事时不出声，但必须写一条 meta.patrol 留痕', async () => {
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  assert.equal(status, 200, `巡夜接口失败：${payload?.error ?? ''}`)
+  assert.equal(payload.ok, true)
+  assert.ok(payload.verdict, '缺 verdict')
+  // 「有没有说」与「跑没跑」是两件事：留痕必须每次都有，
+  // 否则「没汇报」同时代表「没事」和「没跑」，分不开。
+  assert.ok(payload.at, '没写时间就等于没留痕')
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  assert.ok(state.payload.patrolMeta, 'state 必须下发 patrolMeta，否则用户无从反查')
+  assert.equal(state.payload.patrolMeta.at, payload.at, '下发的记录必须就是这次写的那条')
+  assert.equal(state.payload.patrolMeta.reason, 'manual')
+  assert.ok(typeof state.payload.patrolMeta.reported === 'boolean')
+  // 这三样是判据的全部输入，必须如实落盘，否则用户无法自己复算。
+  assert.equal(typeof state.payload.patrolMeta.facts.pending, 'number')
+  assert.equal(typeof state.payload.patrolMeta.facts.flagged, 'number')
+  assert.ok(Array.isArray(state.payload.patrolMeta.reasons))
+})
+
+await test('巡夜：同一局面连跑两次，第二次不该再汇报', async () => {
+  const first = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  const second = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  assert.equal(first.payload.ok, true)
+  assert.equal(second.payload.ok, true)
+  // 指纹相同 ⇒ 第二次 shouldReport 必须为 false。
+  // 这条锁住「只报有事」的真正含义：不是「有数字就报」，是「有新事才报」。
+  if (first.payload.verdict.signature === second.payload.verdict.signature) {
+    assert.equal(second.payload.verdict.shouldReport, false,
+      '局面没变却又要汇报，两周后这条通知就会被无视')
+  }
+})
+
+await test('/anima patrol：没汇报时必须当场说明「为什么没报」，不能只说跑了', async () => {
+  const command = ctx._commands.find((c) => c.name === 'anima')
+  const result = await command.handler({ rawInput: 'patrol' })
+  assert.equal(result.kind, 'success')
+  assert.match(result.text, /巡夜完成/)
+  // 只报有事之后，沉默需要自己解释自己；命令输出里必须出现这句解释。
+  assert.match(result.text, /没有汇报|已汇报/)
+  assert.match(result.text, /meta\.patrol/, '要告诉用户这条记录在哪，否则「可反查」是空话')
+})
+
+await test('巡夜：真有新候选时必须出声（只测「没事不出声」等于只测了一半）', async () => {
+  // 这条用例存在的理由：上面几条全是「没事 ⇒ 不出声」。
+  // 一条永远沉默的巡夜与一条坏掉的巡夜，从外部看完全一样。
+  // 所以必须再证明「有事 ⇒ 一定出声」，否则「只报有事」只验了一半。
+  const add = await callRoute(ctx._routes.get('/api/anima/memory/add'), {
+    method: 'POST',
+    body: { text: '巡夜出声用例：新候选应当触发汇报', note: '来自测试' }
+  })
+  assert.equal(add.status, 200, `投递候选失败：${add.payload?.error ?? ''}`)
+
+  const agent = ctx._makeAgent('patrol-witness')
+  ctx._agents.push(agent)
+  const patrol = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  assert.equal(patrol.payload.ok, true, `巡夜失败：${patrol.payload?.error ?? ''}`)
+
+  // 判据层：新 id 进了集合 ⇒ 指纹变了 ⇒ 必须判「该说」。
+  assert.equal(patrol.payload.verdict.shouldReport, true, '有新候选却判不该汇报，「有事必报」没落地')
+  assert.ok(patrol.payload.verdict.facts.pending > 0, '待审计数应当大于 0')
+  // 投递层：消息真的进了 agent 的 inbox，且带我们自己的来源标记。
+  assert.equal(agent.inbox.length, 1, '判该说却没投递，等于判词与执行脱节')
+  const text = agent.inbox[0].content[0].text
+  assert.match(text, /巡夜/, '注入的正文里应能认出这是巡夜汇报')
+  assert.equal(agent.inbox[0].source.kind, 'plugin:dsh-anima', '注入消息必须自持 producer kind')
+  // 留痕层：同一条记录里 reported 必须为 true，与「说没说」一致。
+  // delivered 不能断言等于 1 —— 前面的用例已经往 ctx._agents 里塞过别的假会话，
+  // 值会随用例顺序漂。这里只要求「至少投到了我这一个」，顺序无关。
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  assert.equal(state.payload.patrolMeta.reported, true, '真汇报了却记为没汇报，留痕就骗人了')
+  assert.ok(state.payload.patrolMeta.delivered >= 1, 'delivered 应当 ≥ 1')
+
+  // 收尾：把这条候选裁决掉，避免污染后续用例的指纹判断。
+  const target = state.payload.memories.pending.find((m) => m.text === '巡夜出声用例：新候选应当触发汇报')
+  assert.ok(target, '刚投递的候选不在待审列表里')
+  await callRoute(ctx._routes.get('/api/anima/memory/decide'), {
+    method: 'POST',
+    body: { id: target.id, decision: 'discard' }
+  })
+  ctx._agents.length = ctx._agents.indexOf(agent) >= 0 ? ctx._agents.indexOf(agent) : ctx._agents.length
+})
+
+await test('巡夜：体检点到的问题必须落盘成明细，不能只留一个数字', async () => {
+  // 这条用例存在的理由：`facts.flagged = 1` 只说得出「有几条」，说不出「哪几条」。
+  // 汇报消息里点过名，但那是会话历史，翻不到就没了；界面上若只有数字，
+  // 用户想问「是哪条」时无处可查 —— 等于半夜被告知「有 1 个问题」，然后没了下文。
+  //
+  // 造一条**真的会体检失败**的记忆（路径不存在），否则 flagged 恒为 0，
+  // 这条用例会以「没有明细」为荣地通过 —— 那是在测空气。
+  const add = await callRoute(ctx._routes.get('/api/anima/memory/add'), {
+    method: 'POST',
+    body: { text: '巡夜明细用例：路径 D:\\这个目录一定不存在\\anima-probe.txt 已经不在了', note: '来自测试' }
+  })
+  assert.equal(add.status, 200)
+  const st = await callRoute(ctx._routes.get('/api/anima/state'))
+  const target = st.payload.memories.pending.find((m) => m.text.includes('anima-probe.txt'))
+  assert.ok(target, '造出来的候选不在缓冲区里')
+  await callRoute(ctx._routes.get('/api/anima/memory/decide'), {
+    method: 'POST',
+    body: { id: target.id, decision: 'adopt' }
+  })
+
+  const patrol = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  assert.equal(patrol.payload.ok, true, `巡夜失败：${patrol.payload?.error ?? ''}`)
+  assert.ok(patrol.payload.verdict.facts.flagged > 0, '造的路径不存在却没被体检点到，用例前提不成立')
+
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const meta = state.payload.patrolMeta
+  const items = meta.flaggedItems
+  assert.ok(Array.isArray(items), '明细没落盘（或 schema 又把它剥掉了）⇒ 界面只剩数字')
+  assert.ok(items.length > 0, 'facts.flagged > 0 却没有明细，两者自相矛盾')
+  const mine = items.find((item) => item.id === target.id)
+  assert.ok(mine, '刚被点到的那条记忆不在明细里')
+  assert.ok(mine.detail && mine.detail.length > 0, '明细没有 detail ⇒ 界面上是一行空白')
+  assert.ok(Array.isArray(mine.kinds) && mine.kinds.length > 0, '明细没写是哪类问题')
+  assert.equal(typeof meta.flaggedDropped, 'number', '「丢了几条」必须落盘，否则截断是静默的')
+
+  // 收尾：删掉这条记忆，避免影响后续用例的指纹与体检计数。
+  await callRoute(ctx._routes.get('/api/anima/memory/delete'), { method: 'POST', body: { id: target.id } })
+})
+
+await test('巡夜明细：没问题时不写空数组，明细必须是 null（空清单 ≠ 有清单但都空）', async () => {
+  const patrol = await callRoute(ctx._routes.get('/api/anima/patrol'), { method: 'POST', body: {} })
+  assert.equal(patrol.payload.ok, true)
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const meta = state.payload.patrolMeta
+  if (meta.facts.flagged === 0) {
+    // 上一条用例已把那条坏路径记忆删掉。这时必须没有明细 —— 写个 [] 会让界面
+    // 画出「这次体检点到了：」然后下面一片空白，看起来像渲染坏了。
+    assert.equal(meta.flaggedItems, null, `flagged=0 却写下了明细：${JSON.stringify(meta.flaggedItems)}`)
+  } else {
+    // 别的用例可能在缓冲区里留了有问题的记忆。那就如实要求明细与数字对得上，
+    // 而不是让这条用例因为前提不成立而假通过。
+    const items = Array.isArray(meta.flaggedItems) ? meta.flaggedItems : []
+    assert.ok(items.length > 0, `flagged=${meta.facts.flagged} 却没有明细，两者自相矛盾`)
+  }
+})
+
 
 await test('导入提交的 added 是记录数组，与 rejected 同形（不是计数）', async () => {
   // 这条用例存在的理由：曾经服务端回 `added: added.length`（数字），而设置页按
@@ -1357,6 +1954,8 @@ await test('未装载成功时三段 section 返回空串（宁可不注入，�
   assert.equal(identity.text({}), '', '存储不可用时不得注入默认档人设')
   assert.equal(bareCtx._sections.get('anima:memory').text({}), '')
   assert.equal(bareCtx._sections.get('anima:pending').text({}), '')
+  // 质检段同样不能凭空注入：规则存在不代表当前会话已被这套配置接管。
+  assert.equal(bareCtx._sections.get('anima:quality').text({}), '')
 })
 
 await test('存储不可用时 /state 返回 503 + 机器可读原因 + 组合指引', async () => {

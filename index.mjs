@@ -20,9 +20,10 @@
 //   - 存储层**没有文件后端兜底**（2026-10-10 决定，与 dsh-checkpoint-rewind 的取舍一致）：
 //     storageDomain 缺失或打开失败时抛 StorageUnavailableError（statusCode 503），
 //     由路由与命令各自呈现给用户；首次装载失败时挂 ctx.inject 就绪信号重试一次，
-//     绝不悄悄换一个落盘点。未装载成功前，三段 section 一律返回空串 —— 宁可没有人设，
+//     绝不悄悄换一个落盘点。未装载成功前，五段 section 一律返回空串 —— 宁可没有人设，
 //     也不要把一份「默认档」当成用户的人设注入进去。
 
+import { existsSync } from 'node:fs'
 import {
   DEFAULT_CONFIG,
   FIELD_LIMITS,
@@ -41,10 +42,12 @@ import {
   compileMemory,
   compilePendingNotice,
   compilePersona,
+  compileRememberGuide,
   compileRules,
   compileStyle,
   compileUserProfile,
-  describeSources
+  describeSources,
+  safeSection
 } from './lib/prompt.mjs'
 import {
   BUILTIN_PRESETS,
@@ -57,7 +60,14 @@ import {
   sanitizeCustomPreset,
   sanitizeCustomPresets
 } from './lib/presets.mjs'
-import { configChangedNoticeText, createInjectionSource, triageNoticeText } from './lib/injection.mjs'
+import {
+  configChangedNoticeText,
+  createInjectionSource,
+  createNoticeMessage,
+  patrolNoticeText,
+  qualityReminderText,
+  triageNoticeText
+} from './lib/injection.mjs'
 import {
   ensureIgnored,
   readOverrides,
@@ -66,10 +76,12 @@ import {
   writeOverrides
 } from './lib/workspace.mjs'
 import {
+  applyMemoryMeta,
   clusterPending,
   groupByStatus,
   makeCandidate,
   selectForInjection,
+  summarizeOmission,
   triage
 } from './lib/memory.mjs'
 import {
@@ -79,19 +91,48 @@ import {
   findImportOverlaps,
   parseImport
 } from './lib/import.mjs'
+import { auditMemories } from './lib/memory-audit.mjs'
+import { assessPatrol, compactFlagged, planNightlyWake } from './lib/patrol.mjs'
 import { AUDIT_ACTORS, AUDIT_MAX_RECORDS, AUDIT_SOURCE_TEXT, summarizeAudit } from './lib/audit.mjs'
+import {
+  checkResponse,
+  compileLedgerRules,
+  compileQualityRules,
+  detectLedgerTriggers,
+  hasLedgerBlock
+} from './lib/quality.mjs'
 
 export const name = 'anima'
 
 const LOG = '[dsh-anima]'
 
-// 与 dsh-soul 的 `soul:persona`（order 0）错开，排在它之后、PLAN_POLICY(500) 之前。
+// 排在 DEPLOYMENT_PERSONA_PREFIX(0) 之后、PLAN_POLICY(500) 之前。
+//
+// 这里**不要**再写「与 dsh-soul 的 soul:persona（order 0）错开」——
+// 那是 1.0.0 时期的注释，现在已经不成立：dsh-agent-soul 早就把
+// `soul:persona` 改成 context（`_research/agentsoul/lib/index.js:633`），
+// 而 section 与 context 是两条互不相干的数轴（宿主
+// `SECTION_ORDERS` / `CONTEXT_ORDERS` 各自独立排序，见
+// docs/host-prompt-semantics.md 第 1 节）。拿别人的 section order
+// 当参照物是无效的，拿别人的 context order 当参照物更是无效。
+// 现在这句话留着只会让下一个人以为需要避让——注释里的错误比没有注释更贵。
 const SECTION_IDENTITY = 'anima:identity'
 const SECTION_MEMORY = 'anima:memory'
 const SECTION_PENDING = 'anima:pending'
+// 质检段排在待审提示之后、PLAN_POLICY(500) 之前：
+// 它是「怎么回答」的约束，必须比「有哪些记忆」更靠近生成点，
+// 否则模型会先读到一堆背景再看到规则，规则容易被当成背景的一部分。
+const SECTION_QUALITY = 'anima:quality'
+// remember 行为指引，order 22 = 紧跟在「有哪些记忆」(20) 与「有几条待审」(21) 之后：
+// 先说清已经有了什么、还有什么没生效，再讲「以后要记什么」——顺序反过来，
+// 模型会先看到一堆操作指引，却不知道自己现在手上有什么。
+// 排在质检段(30)之前：它是「知识怎么积累」，质检是「话怎么说」，前者更靠前。
+const SECTION_REMEMBER = 'anima:remember'
 const ORDER_IDENTITY = 10
 const ORDER_MEMORY = 20
 const ORDER_PENDING = 21
+const ORDER_REMEMBER = 22
+const ORDER_QUALITY = 30
 
 const MAX_BODY_BYTES = 256 * 1024
 
@@ -99,6 +140,36 @@ const warn = (ctx, message) => {
   try {
     ctx?.logger?.warn?.(`${LOG} ${message}`)
   } catch { /* 日志失败不影响主流程 */ }
+}
+
+/**
+ * 把「跳过原因」渲染成一句人话，附在 /anima show 的质检运行行后面。
+ *
+ * 空计数返回空串（没跳过就不占版面）。用固定顺序而不是 Object.keys 的插入顺序：
+ * 计数器的键顺序取决于代码里 return 的先后，重构一次就会变，而这一行是给人看的诊断。
+ */
+function describeSkips(skipped) {
+  const order = [
+    ['not-loaded', '未装载'],
+    ['disabled', '质检关闭'],
+    ['pre-step-check-off', '机制检查关闭'],
+    ['no-session', '拿不到会话'],
+    ['no-events', '读不到事件'],
+    ['no-assistant-message', '还没有回答'],
+    // empty-text 的实际含义是「最近一条 assistant 事件的正文是空的」，
+    // 最典型的情形就是工具调用步 —— 那一步本来就没有话说。
+    // 旧措辞「最近一条无正文」读起来像是出了问题，让人以为质检在漏查；
+    // 但它是**正常且必然**发生的一类跳过，措辞不该带故障暗示。
+    ['empty-text', '工具步无正文'],
+    ['already-checked', '同一条已查过'],
+    ['turn-budget', '本轮提醒额度用完'],
+    ['reject', '链路已拒绝'],
+    ['error', '钩子异常']
+  ]
+  const parts = order
+    .filter(([key]) => (skipped?.[key] ?? 0) > 0)
+    .map(([key, label]) => `${label} ${skipped[key]}`)
+  return parts.length ? `；跳过：${parts.join('、')}` : ''
 }
 
 // ==================== 运行期状态 ====================
@@ -121,7 +192,32 @@ const runtime = {
    * 与 dsh-soul 的 `pendingPersonaProposal` 同款设计：它只是「模型提了个请求，
    * 等用户点头」的暂存区，重启即失效 —— 一份没被确认的提议本就不该跨会话活着。
    */
-  pendingProposal: null
+  pendingProposal: null,
+  /**
+   * 质检钩子的运行计数。
+   *
+   * 为什么必须有这个计数器：没有它，「一条提醒都没有」这一现象有两种完全相反的
+   * 解读 —— (a) 钩子跑了、判了 N 条、确实没有该报的；(b) 钩子根本没跑，或者
+   * 每轮都在读空文本就早早返回。两种情况下用户看到的东西一模一样：什么都没有。
+   * 而 (b) 意味着整个质检层是死的，却表现得和「一切正常」完全相同。
+   *
+   * 这和「不许谎报检查结果」是同一条要求的另一面：**不许让「没查」长得像「查过没事」**。
+   * 计数器是唯一能把这两者分开的东西，所以它不是调试残留，是交付物的一部分。
+   *
+   * 口径是**跨重启累计**：落盘在 meta.qualityStats，启动时读回接着累加。
+   * （早期版本只放内存、重启清零 —— 那会让「0 次」这个数字同时代表
+   * 「真的没查」和「查过但刚重启」，把计数器本身的意义抹掉。）
+   * `startedAt` 是本次启动的时刻，与累计值分开表达。
+   */
+  qualityStats: {
+    checks: 0,        // 真正进入判定的次数（读到非空文本并跑了 checkResponse）
+    reminders: 0,     // 实际发出提醒的次数
+    suppressed: 0,    // 判到了问题、但被「每轮上限」压住没发的次数
+    skipped: {},      // 每个提前返回原因的累计计数
+    last: null,       // 最近一次判定的摘要（不落盘：时间久了没有诊断价值）
+    startedAt: null,  // 本次启动时刻（ISO）
+    flushedAt: null   // 最后一次成功落盘的时刻（ISO）
+  }
 }
 
 /**
@@ -157,6 +253,17 @@ function overridesForContext(context) {
   }
 }
 
+/**
+ * 本地绑定：把 lib 层那个「绝不抛」的 `safeSection` 接到宿主 logger 上。
+ *
+ * 为什么实现放在 lib、只有接线放在这里：
+ * 这个文件被宿主的插件加载器直接执行，`verify-core` 没法 import 它（依赖宿主包），
+ * 于是任何写在这里的函数都只能靠「读源码字符串 + 正则匹配」来断言 ——
+ * 那测的是拼写，不是行为。把它挪进 `lib/prompt.mjs` 之后，
+ * 回归可以真的传一个会抛的渲染函数进去，断言它返回 ''、断言回调收到消息。
+ */
+const renderSection = (label, render) => safeSection(label, render, (message) => warn(runtime.ctx, message))
+
 /** 身份段：每轮装配期实时求值，因此工作区覆盖能立刻生效，无需重启会话。 */
 function identityText(context) {
   // 装载失败时返回空串：宁可没有人设，也不注入一份默认档冒充用户配置。
@@ -164,9 +271,11 @@ function identityText(context) {
   // 关掉插件时改为注入一句「已关闭」的声明 —— 见 compileDisabledNotice 的注释：
   // 会话历史里的旧设定不会自己消失，只有明说作废才能让模型停止沿用。
   if (!runtime.config.enabled) return compileDisabledNotice()
-  const local = overridesForContext(context)
-  const { effective } = mergePersona(runtime.config, local?.overrides ?? null)
-  return compilePersona(effective)
+  return renderSection('identity', () => {
+    const local = overridesForContext(context)
+    const { effective } = mergePersona(runtime.config, local?.overrides ?? null)
+    return compilePersona(effective)
+  })
 }
 
 /**
@@ -180,7 +289,10 @@ function memoryText(context) {
   if (!runtime.loaded) return ''
   if (!runtime.config.enabled) return ''
   if (!runtime.config.memory.enabled) return ''
-  return compileMemory(injectionSelection(context).selected)
+  return renderSection('memory', () => {
+    const selection = injectionSelection(context)
+    return compileMemory(selection.selected, summarizeOmission(selection))
+  })
 }
 
 /** 统一的注入筛选入口：段渲染与设置页预览必须走同一套参数，否则「预览里有的、实际没有」。 */
@@ -196,7 +308,226 @@ function pendingText() {
   if (!runtime.loaded) return ''
   if (!runtime.config.enabled) return ''
   if (!runtime.config.memory.enabled) return ''
-  return compilePendingNotice(runtime.pendingCount)
+  return renderSection('pending', () => compilePendingNotice(runtime.pendingCount))
+}
+
+/**
+ * remember 行为指引段。
+ *
+ * 注册条件刻意写在**函数内部**而不是注册点：section 的注册发生在配置可能还没读完的
+ * 时候，而 `text` 每轮装配期都会重新求值。放外面的后果是「用户在设置里打开自动捕获，
+ * 但这一段要等重启才出现」——那正好是最需要它出现的时刻。
+ *
+ * 但 `autoCapture` 关掉时必须返回空串：`remember` 工具在这种情况下会直接拒绝
+ * （`index.mjs` 的 execute 里第一条判断），告诉模型去用一个必然失败的工具，
+ * 比什么都不说更糟 —— 它会反复尝试，然后把失败解释成「系统坏了」。
+ */
+function rememberText() {
+  if (!runtime.loaded) return ''
+  if (!runtime.config.enabled) return ''
+  if (!runtime.config.memory.enabled) return ''
+  if (!runtime.config.memory.autoCapture) return ''
+  return renderSection('remember', () => compileRememberGuide())
+}
+
+/**
+ * 质检段：十二条判据 + 对账三档。
+ *
+ * 之所以放进提示词而不是只靠 pre-step 机制：pre-step 只能在**事后**指出
+ * 「上一轮少写了什么」，它没法让这一轮就写对。两者是配套的 ——
+ * 提示词负责让规则可被遵守，机制负责让违反可被看见。
+ */
+/**
+ * 质检段的**唯一**拼装入口。
+ *
+ * 之前这段文本被抄了三处（提示词 section、getSystemPrompt、/api/anima/preview），
+ * 结果第三处漏掉了末尾「关于上一段怎么被检查」那三个小节 —— 同一个概念有三份
+ * 实现，迟早会漂成三份不一样的文本。现在三处都只调这一个函数：
+ * 有任何一处想加内容，另外两处自动跟上；没有任何一处能悄悄单独改变。
+ *
+ * @param {object|undefined} quality 质检配置；缺失或 enabled=false 时返回空串。
+ * @returns {string}
+ */
+function compileQualitySection(quality) {
+  if (!quality || !quality.enabled) return ''
+  const parts = [compileQualityRules(), compileLedgerRules(quality.ledgerLevel)].filter(Boolean)
+  if (parts.length === 0) return ''
+  // 末句把「谁在判」说清楚：这段话是判据，不是我已经通过了的证明。
+  parts.push([
+    '## 关于上一段怎么被检查',
+    '每轮结束前会有代码（不是你自己）用上面这些形状检查你的回答，命中就在下一步开始时提醒你。',
+    '那是机器判词，不是你的自我评价；被提醒时照它改，不要辩解称自己「已经注意了」。'
+  ].join('\n'))
+  return parts.join('\n\n')
+}
+
+function qualityText() {
+  if (!runtime.loaded) return ''
+  if (!runtime.config.enabled) return ''
+  return renderSection('quality', () => compileQualitySection(runtime.config.quality))
+}
+
+// ==================== 质检层：pre-step 机制检查 ====================
+
+/**
+ * 每会话的检查痕迹：记录上一条被检查过的 assistant 事件序号，避免同一句话被反复提醒。
+ * 用 WeakMap 挂 session 对象，会话销毁即回收，不需要手动清理。
+ */
+const checkedSeq = new WeakMap()
+
+/**
+ * 每会话每轮的提醒次数上限。
+ *
+ * 为什么必须有这个闸门：提醒是一条 user 消息，它会让我再答一条；那条回答如果
+ * 仍然命中（比如我确实补不出证据，只能重复说「没核过」），就会再触发一次提醒。
+ * 宿主的一个 turn 内可以有多步，理论上能滚成一轮内无限重来 —— 用户看到的是
+ * 回答一次，实际后台在空转，烧的是他的额度。这类「机制自己把自己拉起来」的
+ * 循环比漏报危险得多：漏报只是没抓住我，自激是把我变成了不可控的刷子。
+ * 上限不是调参问题，是安全阀：到顶就停，并明确说「这一轮不再提醒」。
+ */
+const MAX_REMINDERS_PER_TURN = 2
+const remainingReminders = new WeakMap()  // session → { turn, left }
+
+/**
+ * 从 assistant/message 事件里取出纯文本（跳过工具调用块等非文本内容）。
+ *
+ * ⚠️ 事件形状是实测出来的，不要凭直觉改。DSH 落盘的 assistant/message 事件是：
+ *   { type:'assistant/message', seq, time, data: { turn, step, message, usage, stream } }
+ * 消息本体在 data.message（{ role, content, source, id }）里，
+ * 所以文本在 **data.message.content**，不在 data.content。
+ *
+ * 这里踩过坑并且值得写下来：第一版读的是 data.content，永远取到空串，
+ * 钩子每轮都在 `text === ''` 处静默返回 —— 日志里零报错，看起来像「没命中」。
+ * 更糟的是单元测试的夹具照抄了这个错误形状，所以测试全绿也抓不到。
+ * 夹具必须照抄现实，不能照抄实现。
+ *
+ * 现在两种形状都认：优先真实形状，再退回简写形状（兼容测试与未来版本）。
+ */
+function eventText(event) {
+  const collected = []
+  const pushFrom = (blocks) => {
+    if (!Array.isArray(blocks)) return
+    for (const b of blocks) {
+      if (b?.type === 'text' && typeof b.text === 'string') collected.push(b.text)
+    }
+  }
+  pushFrom(event?.data?.message?.content)
+  if (collected.length === 0) pushFrom(event?.data?.content)
+  return collected.join('\n').trim()
+}
+
+/**
+ * 挂 agent/pre-step：读**上一轮**的 assistant 回答，用 lib/quality.mjs 的纯函数判定，
+ * 命中就往下一条 user 消息批里追加一条 plugin 来源的提醒。
+ *
+ * 为什么这是整套设计里唯一「不靠我自检」的位置：
+ * 检查发生在模型之外——代码先读已落盘的 assistant 消息，再决定要不要提醒。
+ * 模型无法「觉得自己没问题」来绕过它，因为它根本不参与这个判定。
+ *
+ * 但它也有明确的天花板，写在这里防止被当成万能：
+ *   - 它只能看**写出来的字**，看不到我没说的话（R07 选择性呈现它判不了）；
+ *   - 它判的是形状（有没有来源、有没有对账块），不是内容对不对；
+ *   - 提示发出去之后，我到底改没改，它管不了 —— 那是下一轮 shape 检查的事了。
+ *
+ * 失败一律静默降级：质检是增强能力，任何异常都不该让对话本身失败。
+ */
+function registerQualityHook(ctx) {
+  /**
+   * 记一次「进去了但没查成」。必须带原因，否则计数器只会告诉用户「跳过很多次」，
+   * 却说不清是预算用完了还是根本没读到文本 —— 那和不计数没区别。
+   */
+  const skip = (reason) => {
+    const s = runtime.qualityStats.skipped
+    s[reason] = (s[reason] ?? 0) + 1
+    // 每一项跳过原因是「没查」的证据，值得落盘 —— 尤其 empty-text / no-events
+    // 这种高频项：它们比 checks 更能说明钩子在空转。
+    scheduleQualityStatsFlush()
+  }
+
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    try {
+      if (decision?.kind === 'reject') { skip('reject'); return decision }
+      if (!runtime.loaded || !runtime.config?.enabled) { skip('not-loaded'); return decision }
+      const q = runtime.config.quality
+      if (!q || !q.enabled) { skip('disabled'); return decision }
+      if (!q.preStepCheck) { skip('pre-step-check-off'); return decision }
+
+      const agent = payload?.agent
+      const session = agent?.session
+      if (!session || typeof session.snapshotEvents !== 'function') { skip('no-session'); return decision }
+
+      // 每轮独立计数：换轮就回满。用 payload.turn（宿主在 position 里给的，和 step 同级）。
+      //
+      // ⚠️ 额度只限制「发不发提醒」，**不限制「查不查」**。
+      // 早期版本把额度判断放在这里（检查之前），后果是被挡掉的那些回答根本没被
+      // 检查过 —— 于是「这一轮有几条该提醒而没提醒」这个问题永远没有答案，
+      // 统计里只有一个笼统的「额度用完 N 次」。那正是「没查」长得像「查过没事」。
+      // 现在改成：每一条都查，查完再决定发不发；被挡的单独记成 suppressed。
+      const turn = typeof payload?.turn === 'number' ? payload.turn : -1
+      const budget = remainingReminders.get(session)
+      if (!budget || budget.turn !== turn) {
+        remainingReminders.set(session, { turn, left: MAX_REMINDERS_PER_TURN })
+      }
+      const state = remainingReminders.get(session)
+
+      // 找最后一条 assistant 回答。step === 1 时上一轮刚结束，正是要检查的对象；
+      // 后续 step 是同一轮内的工具循环，最后一条往往是只带工具调用的空文本消息。
+      const events = session.snapshotEvents()
+      if (!Array.isArray(events)) { skip('no-events'); return decision }
+      let idx = -1
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        if (events[i]?.type === 'assistant/message') { idx = i; break }
+      }
+      if (idx === -1) { skip('no-assistant-message'); return decision }
+
+      const event = events[idx]
+      const seq = typeof event.seq === 'number' ? event.seq : idx
+      if (checkedSeq.get(session) === seq) { skip('already-checked'); return decision }
+
+      // 只带工具调用的 assistant 消息（同一轮内的中间步）一定会走到这里。
+      // 它们不是「回答」，没有可检查的文字，所以是 skip 而不是 check。
+      const text = eventText(event)
+      if (text === '') { skip('empty-text'); return decision }
+
+      // 到这里才算一次真正的检查 —— 上面所有 return 都不算。
+      // 注意：额度（state.left）在这之后才看。查一定要查，发不发才受额度约束。
+      runtime.qualityStats.checks += 1
+      checkedSeq.set(session, seq)
+      scheduleQualityStatsFlush()
+
+      // 先算判词，确定了要提醒才占配额、才记账 —— 否则「检查过但不发」也会吃掉次数。
+      const result = checkResponse(text, { ledgerLevel: q.ledgerLevel, strict: q.strict === true })
+      const notice = qualityReminderText(result, q.maxFindingsInReminder ?? 5)
+      // 额度用完时这条回答仍然被检查了，只是提醒没发出去。
+      // 它必须**单独计数**而不是混进 reminders：否则「发了几条」有了，
+      // 「因为闸门压住了几条」永远查不到，用户看到的覆盖率就是一个无法解释的数。
+      const suppressed = notice !== '' && state.left <= 0
+      if (suppressed) {
+        runtime.qualityStats.suppressed = (runtime.qualityStats.suppressed ?? 0) + 1
+        skip('turn-budget')
+      }
+      runtime.qualityStats.last = {
+        seq,
+        at: new Date().toISOString(),
+        chars: text.length,
+        findings: (result.findings || []).map((f) => f.ruleId),
+        uncovered: result.uncovered || [],
+        injected: notice !== '' && !suppressed
+      }
+      if (notice === '' || suppressed) return decision
+
+      state.left -= 1
+      runtime.qualityStats.reminders += 1
+      scheduleQualityStatsFlush()
+      const message = createNoticeMessage(notice)
+      return { ...decision, messages: [...decision.messages, message] }
+    } catch (err) {
+      skip('error')
+      warn(ctx, `质检钩子异常（已跳过本轮检查）：${String(err?.message || err)}`)
+      return decision
+    }
+  }, { prepend: true })
 }
 
 function registerSystemPrompt(ctx) {
@@ -209,10 +540,28 @@ function registerSystemPrompt(ctx) {
       }
       // 先释放旧 section 再注册新的，触发 system-prompt/change，
       // 让 DSH 丢弃当前会话已缓存的 system prompt 快照（手法同 dsh-soul）。
+      //
+      // `interpolate: false` 是必需的安全阀，不是性能优化。
+      // 宿主 renderPrompt 会对每个 section 跑 interpolate()，规则是：
+      //   `{{` 后面必须紧跟 `标识符}}`，否则抛 malformed；
+      //   标识符没注册在 assembly.variables 里就抛 unknown。
+      // 抛出点在 systemPrompt.assemble() 内部 —— 也就是整轮装配失败，
+      // 不是「这一段空着」，是整次请求起不来。
+      // 而我们的五段里有**两段**含用户自由输入或模型写入的文本：
+      //   identity 段 ← persona（userBio / customInstructions / style …）
+      //   memory  段 ← 用户采纳的记忆正文
+      // 其余三段（pending 只有数量、remember 与 quality 是静态文案）不含外部文本。
+      // 用户只要在设定里写「我的笔记格式是 {{key: value}}」，
+      // 或者存一条含 `{{x}}` 的记忆，装配就会抛。
+      // 已实测：compilePersona 把 userBio 原样透传，`{{a.b}}` 一路活到宿主
+      // 的 interpolate 并抛 malformed（细节见 docs/host-prompt-semantics.md 第 6 节）。
+      // 我们从不注册宿主变量，关掉零代价。
       dispose = [
-        spCtx.systemPrompt.section({ name: SECTION_IDENTITY, order: ORDER_IDENTITY, text: identityText }),
-        spCtx.systemPrompt.section({ name: SECTION_MEMORY, order: ORDER_MEMORY, text: memoryText }),
-        spCtx.systemPrompt.section({ name: SECTION_PENDING, order: ORDER_PENDING, text: pendingText })
+        spCtx.systemPrompt.section({ name: SECTION_IDENTITY, order: ORDER_IDENTITY, text: identityText, interpolate: false }),
+        spCtx.systemPrompt.section({ name: SECTION_MEMORY, order: ORDER_MEMORY, text: memoryText, interpolate: false }),
+        spCtx.systemPrompt.section({ name: SECTION_PENDING, order: ORDER_PENDING, text: pendingText, interpolate: false }),
+        spCtx.systemPrompt.section({ name: SECTION_REMEMBER, order: ORDER_REMEMBER, text: rememberText, interpolate: false }),
+        spCtx.systemPrompt.section({ name: SECTION_QUALITY, order: ORDER_QUALITY, text: qualityText, interpolate: false })
       ]
     }
 
@@ -247,7 +596,9 @@ const PROMPT_AFFECTING_FIELDS = new Set([
 ])
 
 const affectsPrompt = (changed) => changed.some(
-  (key) => PROMPT_AFFECTING_FIELDS.has(key) || String(key).startsWith('memory.')
+  (key) => PROMPT_AFFECTING_FIELDS.has(key)
+    || String(key).startsWith('memory.')
+    || String(key).startsWith('quality.')
 )
 
 /**
@@ -278,7 +629,7 @@ async function reload(ctx, { refreshPrompt = true, configChange = null } = {}) {
   if (!store) return
   const config = await store.getConfig()
   runtime.config = config
-  // 读到了才置 true：三段 section 靠它判断「内存快照是否有效」，
+  // 读到了才置 true：五段 section 靠它判断「内存快照是否有效」，
   // 首次加载失败时宁可没有人设，也不注入一份默认档冒充用户配置。
   runtime.loaded = true
 
@@ -292,6 +643,11 @@ async function reload(ctx, { refreshPrompt = true, configChange = null } = {}) {
     runtime.pendingCount = 0
   }
 
+  // 质检计数从介质读回：这几个数字是「质检层活着没有」的唯一证据，
+  // 只放内存会让每次重启都重置成 0，而 0 同时也代表「真的没查过」——
+  // 两种相反的事实长得一样，正是计数器本来要消灭的沉默。
+  await restoreQualityStats(store)
+
   if (refreshPrompt && typeof runtime.refresh === 'function') {
     try { runtime.refresh() } catch (err) { warn(ctx, `提示词重注册失败：${String(err?.message || err)}`) }
   }
@@ -304,6 +660,124 @@ async function reload(ctx, { refreshPrompt = true, configChange = null } = {}) {
       await notifyConfigChange(ctx, changed, configChange.source)
     }
   }
+}
+
+// ==================== 质检计数的持久化 ====================
+
+/** meta 表里存质检计数的键。与 triage / patrol 同级，靠键区分形状。 */
+const QUALITY_STATS_KEY = 'qualityStats'
+
+/** 两次落盘之间的最小间隔（毫秒）。pre-step 每步都跑，不节流等于把磁盘当计数器用。 */
+const QUALITY_STATS_FLUSH_MS = 10_000
+
+/** 节流器：为 null 表示当前没有排队中的写盘。 */
+let qualityStatsFlushTimer = null
+let qualityStatsFlushAt = 0
+
+/**
+ * 从介质读回质检计数。
+ *
+ * 用**累加**而不是覆盖：一份计数是这台机器上这个插件总共跑了多少次，
+ * 重启不该把它抹掉。代价是「本次启动查了多少」这个数字会丢 —— 所以另外
+ * 用 `startedAt` 记住本次启动的时刻，两者一起给出去，用户自己能分开看。
+ *
+ * @param {object} store StateStore 实例
+ */
+async function restoreQualityStats(store) {
+  try {
+    const table = await store.table?.('meta')
+    const saved = table?.get?.(QUALITY_STATS_KEY)
+    if (!saved || typeof saved !== 'object') {
+      // 头一回运行：记下启动时刻即可，计数保持 0。
+      runtime.qualityStats.startedAt = new Date().toISOString()
+      return
+    }
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0)
+    runtime.qualityStats.checks = num(saved.checks)
+    runtime.qualityStats.reminders = num(saved.reminders)
+    runtime.qualityStats.suppressed = num(saved.suppressed)
+    // skipped 逐键累加：不同版本的键集合会变，整体覆盖会让新键凭空多出来。
+    const skipped = saved.skipped && typeof saved.skipped === 'object' ? saved.skipped : {}
+    for (const [key, value] of Object.entries(skipped)) {
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        runtime.qualityStats.skipped[key] = value
+      }
+    }
+    runtime.qualityStats.startedAt = new Date().toISOString()
+    runtime.qualityStats.flushedAt = typeof saved.flushedAt === 'string' ? saved.flushedAt : null
+  } catch (err) {
+    // 读不回来不能让插件起不来：计数是诊断信息，不是主功能。
+    // 但要留一行日志，否则「重启之后数字归零」会被当成正常行为。
+    warn(runtime.ctx, `质检计数读回失败（本次从 0 开始累加）：${String(err?.message || err)}`)
+    runtime.qualityStats.startedAt = new Date().toISOString()
+  }
+}
+
+/**
+ * 把质检计数写回介质。
+ *
+ * 失败只 warn，不重试、不抛：计数丢一次不影响任何判断，而它抛出去会连累
+ * 正在跑的 pre-step 钩子 —— 那个钩子的失败会让整轮对话失败。
+ */
+async function flushQualityStats(store = runtime.store) {
+  if (!store) return { ok: false, error: '存储未就绪' }
+  try {
+    const table = await store.table?.('meta')
+    if (!table || typeof table.put !== 'function') return { ok: false, error: 'meta 表不可用' }
+    const stats = runtime.qualityStats
+    const payload = {
+      checks: stats.checks,
+      reminders: stats.reminders,
+      suppressed: stats.suppressed,
+      skipped: { ...stats.skipped },
+      startedAt: stats.startedAt,
+      flushedAt: new Date().toISOString()
+    }
+    await table.put(QUALITY_STATS_KEY, payload)
+    stats.flushedAt = payload.flushedAt
+    return { ok: true }
+  } catch (err) {
+    warn(runtime.ctx, `质检计数落盘失败（下次会重试）：${String(err?.message || err)}`)
+    return { ok: false, error: String(err?.message || err) }
+  }
+}
+
+/**
+ * 标记计数已变脏，安排一次节流写盘。
+ *
+ * 为什么不每步直接 await 写盘：pre-step 位于每一次模型调用之前，写盘是异步 I/O，
+ * 在高频场景（一次任务几十步）里会变成纯粹的浪费 —— 而这段时间里计数只增不减，
+ * 中途丢掉一次的真实损失是「少记几步」，不是「数据不一致」。
+ *
+ * 反过来也不能完全不写：插件崩掉或用户强退时，内存里的数字直接消失，
+ * 那正好是最需要它的时候。10 秒节流是这两者之间的折中，不是拍脑袋的常数 ——
+ * 比一次典型对话的间隔短，比单步的间隔长。
+ */
+function scheduleQualityStatsFlush() {
+  const now = Date.now()
+  const elapsed = now - qualityStatsFlushAt
+  if (qualityStatsFlushTimer) return
+  if (elapsed >= QUALITY_STATS_FLUSH_MS) {
+    // 距上次写入已经够久，直接进队列（不阻塞调用方）。
+    qualityStatsFlushAt = now
+    qualityStatsFlushTimer = Promise.resolve()
+      .then(() => flushQualityStats())
+      .catch(() => {})
+      .finally(() => { qualityStatsFlushTimer = null })
+    return
+  }
+  const wait = QUALITY_STATS_FLUSH_MS - elapsed
+  const timer = setTimeout(() => {
+    qualityStatsFlushAt = Date.now()
+    qualityStatsFlushTimer = Promise.resolve()
+      .then(() => flushQualityStats())
+      .catch(() => {})
+      .finally(() => { qualityStatsFlushTimer = null })
+  }, wait)
+  // Node 里 unref 让这个定时器不阻止进程退出 —— 否则一个 10 秒的防抖
+  // 能把 DSH 的退出拖住。浏览器/宿主环境没有 unref，判一下再用。
+  try { timer?.unref?.() } catch { /* 没有 unref 就算了 */ }
+  qualityStatsFlushTimer = timer
 }
 
 // ==================== 每晚整理 ====================
@@ -320,7 +794,7 @@ const dayKey = (d = new Date()) => {
  * 语义归纳由 Agent 在对话中通过 remember 工具完成 —— 用户要的是
  * 「自动整理到缓冲区，然后我来裁决」，不是「模型悄悄替我决定什么值得记」。
  */
-async function runTriage(ctx, { reason = 'nightly' } = {}) {
+async function runTriage(ctx, { reason = 'nightly', notify = true } = {}) {
   const store = runtime.store
   if (!store) return { ok: false, error: '存储未就绪' }
 
@@ -352,11 +826,100 @@ async function runTriage(ctx, { reason = 'nightly' } = {}) {
 
   await reload(ctx, { refreshPrompt: true })
 
-  if (config.memory.notifyOnSessionStart) {
+  // notify=false 时不在这里发：由 runPatrol 把整理结果与体检结果合并成一条再发。
+  // 两条通知同一晚各发一遍，等于把「说过的话」拆成两份噪音。
+  if (notify && config.memory.notifyOnSessionStart) {
     await notifyAgents(ctx, summary, kept)
   }
   warn(ctx, `整理完成（${reason}）：待审 ${summary.pendingBefore} → ${summary.pendingAfter}，自动清理 ${toDiscard.length} 条`)
-  return { ok: true, summary }
+  return { ok: true, summary, kept }
+}
+
+/**
+ * 巡夜：整理 + 体检 + 决定要不要说话。
+ *
+ * 用户定的规则（m05776）：「有需要汇报的就汇报没有就不汇报」。
+ *
+ * 这个函数是唯一同时知道三件事的地方：今晚整理动了什么、体检查出什么、
+ * 上次汇报时的指纹是什么。分开写会让「要不要说」散落在三处，而三处各自判断
+ * 就会各自说谎。
+ *
+ * **无论说不说，都写一条 meta.patrol。** 这是这条规则能成立的前提：
+ * 只报有事，沉默就有两种意思（没事 / 没跑），必须留痕才能分开。
+ *
+ * @param {object} ctx 插件上下文
+ * @param {{reason?: string}} [options] reason 只进日志与记录，不改变判据
+ */
+async function runPatrol(ctx, { reason = 'nightly' } = {}) {
+  const store = runtime.store
+  if (!store) return { ok: false, error: '存储未就绪' }
+
+  const config = await store.getConfig()
+  if (!config.memory.enabled) return { ok: false, error: '记忆层已关闭' }
+
+  const triaged = await runTriage(ctx, { reason: `patrol:${reason}`, notify: false })
+  if (!triaged.ok) return triaged
+
+  const all = await store.listMemories()
+  const groups = groupByStatus(all)
+  const audit = auditMemories(all, { probe: (p) => existsSync(p) })
+
+  const metaTable = await store.table?.('meta')
+  const previous = metaTable ? metaTable.get('patrol') : null
+
+  const verdict = assessPatrol({
+    pendingIds: groups.pending.map((r) => r.id),
+    flaggedIds: audit.flagged.map((r) => r.id),
+    removed: triaged.summary.duplicatesRemoved + triaged.summary.overflowRemoved,
+    previousSignature: previous?.signature ?? ''
+  })
+
+  const at = new Date().toISOString()
+  // 体检明细压成可落盘的那一份。压缩在写入前做，不在读的时候做 ——
+  // 这样落盘的内容本身就是「界面要显示的东西」，读回不必再猜。
+  const compact = compactFlagged(audit.flagged)
+  let delivered = 0
+
+  if (verdict.shouldReport && config.memory.notifyOnSessionStart) {
+    const text = patrolNoticeText({
+      facts: verdict.facts,
+      pendingTitles: groups.pending.map((r) => r.text),
+      flaggedDetails: audit.flagged,
+      triage: triaged.summary,
+      checked: audit.checked
+    })
+    delivered = await injectToAgents(ctx, text, '巡夜汇报')
+  }
+
+  if (metaTable) {
+    await metaTable.put('patrol', {
+      at,
+      day: dayKey(),
+      reason,
+      signature: verdict.signature,
+      // 上次汇报时的指纹与这次一样 ⇒ 这次没说。用户查到这条就能分清
+      // 「巡过了没事」和「巡夜没跑」—— 后者根本没有这一行。
+      reported: delivered > 0,
+      wouldReport: verdict.shouldReport,
+      delivered,
+      reasons: verdict.reasons,
+      facts: verdict.facts,
+      // 新增/减少分开记：判据只看「新增」，但「这一周清掉了 4 条」这种事实
+      // 必须留在记录里，否则用户没法回答「我上周处理的那批东西哪儿去了」。
+      added: verdict.added ?? null,
+      cleared: verdict.cleared ?? null,
+      checked: audit.checked,
+      // 体检明细落盘（2026-10-25）：`facts.flagged` 只说「有几条」，说不出「哪几条」。
+      // 汇报消息会点名，但消息进的是会话历史，翻不到就没了；界面上只有个数字，
+      // 用户想问「是哪条」时无处可查。这里存一份压缩后的明细，供设置页直接展示。
+      flaggedItems: compact.items.length > 0 ? compact.items : null,
+      flaggedDropped: compact.dropped
+    })
+  }
+
+  warn(ctx, `巡夜完成（${reason}）：待审 ${verdict.facts.pending}，体检 ${verdict.facts.flagged}，`
+    + `整理动过 ${verdict.facts.removed} 条 → ${delivered > 0 ? `已汇报（${delivered} 个会话）` : '无事，未汇报'}`)
+  return { ok: true, verdict, delivered, at, triage: triaged.summary, audit: { checked: audit.checked, flagged: audit.flagged.length } }
 }
 
 /**
@@ -367,6 +930,9 @@ async function runTriage(ctx, { reason = 'nightly' } = {}) {
  * @returns {Promise<number>} 成功注入的会话数
  */
 async function injectToAgents(ctx, text, label) {
+  // 空文本不注入：调用方用空串表示「这次没有要说的」，那是**沉默**，
+  // 不是一条空消息。真正的空消息会出现在对话历史里，模型读到会以为用户说了话。
+  if (typeof text !== 'string' || text.trim() === '') return 0
   const agents = ctx.get?.('agents')
   if (!agents || typeof agents.list !== 'function') return 0
   let createUserMessage
@@ -433,23 +999,35 @@ function scheduleNightly(ctx, state) {
   const arm = () => {
     clear()
     const hour = runtime.config.memory.nightlyHour
-    const now = new Date()
-    const next = new Date(now)
-    next.setHours(hour, 0, 0, 0)
-    if (next <= now) next.setDate(next.getDate() + 1)
-    const delay = Math.min(next.getTime() - now.getTime(), 6 * 60 * 60 * 1000)
+    const plan = planNightlyWake({ now: new Date(), hour })
     state.timer = setTimeout(async () => {
       try {
         if (runtime.config.memory.enabled && runtime.config.memory.nightlyTriage) {
+          if (!plan.isTarget) {
+            // 中途醒来只为重新定闹钟。这里**不能**跑巡夜：否则「几点跑巡夜」
+            // 会由「开机补跑有没有成功」决定，而不是由 nightlyHour 决定
+            // （m06351 实测到的就是这个）。
+            return
+          }
+          // 再核一次小时。`isTarget` 是挂闹钟时算的，而 setTimeout 在机器休眠、
+          // 系统改时间、长时间挂起之后可能拖到别的钟点才回调；这时候光信
+          // isTarget 就会在上班时间跑一遍「夜间巡夜」。
+          const nowHour = new Date().getHours()
+          if (nowHour !== hour) {
+            warn(ctx, `巡夜跳过：闹钟落在 ${nowHour} 点，不是设定的 ${hour} 点`)
+            return
+          }
           const last = await state.lastTriageDay()
-          if (last !== dayKey()) await runTriage(ctx, { reason: 'nightly' })
+          // 到点就跑巡夜，不再只跑整理：整理是巡夜的一部分，汇报与否由
+          // runPatrol 依据「有没有新的事」机械判定（见 lib/patrol.mjs）。
+          if (last !== dayKey()) await runPatrol(ctx, { reason: 'nightly' })
         }
       } catch (err) {
-        warn(ctx, `每晚整理失败：${String(err?.message || err)}`)
+        warn(ctx, `每晚巡夜失败：${String(err?.message || err)}`)
       } finally {
         arm()
       }
-    }, delay)
+    }, plan.delayMs)
     state.timer.unref?.()
   }
 
@@ -627,6 +1205,7 @@ function registerRoutes(ctx) {
       const groups = groupByStatus(all)
       const metaTable = await runtime.store.table?.('meta')
       const meta = metaTable?.get('triage')
+      const patrolMeta = metaTable?.get('patrol')
       // 「每条记忆为什么进 / 为什么不进」随 state 下发。设置页只能通过 HTTP 拿到
       // 状态，没有会话 context，因此 cwd 走查询参数 —— 不传时按「无工作区上下文」
       // 计算，此时工作区记忆一律显示为「当前会话没有工作区信息」，这本身也是
@@ -714,6 +1293,28 @@ function registerRoutes(ctx) {
           actors: AUDIT_ACTORS
         },
         triageMeta: meta ?? null,
+        // 巡夜记录：**这是「没汇报」可反查的唯一出口**。
+        //
+        // 只报有事之后，沉默有两种意思 —— 「巡过了，没事」和「巡夜没跑」。前者会
+        // 写这一行，后者根本没有这一行，于是用户随时能分清。reported=false 且
+        // facts 全 0 就是「真的没事」，不是「它死了」。
+        patrolMeta: patrolMeta ?? null,
+        // 质检钩子的运行计数。
+        //
+        // 口径是**累计**（跨重启），不是「本次运行」。曾经的注释写的是「仅内存，
+        // 重启清零」，那让这个数字在重启后既可能是「真的没查过」也可能是
+        // 「查了几百次但刚重启」—— 两种相反的事实长得一样，正是这个计数器
+        // 存在的意义所在，清零等于把它废掉。现在落盘到 meta.qualityStats，
+        // 读回时累加；`startedAt` 单独标出本次启动时刻，两种口径都看得到。
+        //
+        // 为什么把它放进 /state 而不是只在日志里：这个计数器的唯一用途就是让用户
+        // 区分「查了、没事」和「根本没查」。放在需要翻日志才看得到的地方，等于
+        // 在需要它的时候用不上它。设置页/诊断口一拉就能看到 checks=0 → 钩子是死的。
+        qualityStats: {
+          ...runtime.qualityStats,
+          skipped: { ...runtime.qualityStats.skipped },
+          note: 'checks 是真正跑过判定的次数；skipped 里的原因说明为什么没跑。checks=0 就说明这一整套没在工作，别把「没有提醒」当成「没有问题」。'
+        },
         // 一键导入（Phase ②）：那段「复制给别的 AI」的提示词随 state 下发。
         //
         // 放 state 而不是单独开一条路由，理由是它**永远不变**（是常量，不随配置走）：
@@ -779,8 +1380,20 @@ function registerRoutes(ctx) {
           style: compileStyle(effective),
           instructions: compileInstructions(effective),
           rules: compileRules(),
-          memory: compileMemory(injection.selected),
-          pending: compilePendingNotice(runtime.pendingCount)
+          memory: compileMemory(injection.selected, summarizeOmission(injection)),
+          pending: compilePendingNotice(runtime.pendingCount),
+          // remember 指引段同样必须在预览里出现，理由与下面质检段完全一致：
+          // 预览是「模型这一轮到底看到什么」的唯一对外答案。漏一段就等于
+          // 对外保证了一份与实际注入不符的文本。
+          remember: globalConfig.memory.enabled && globalConfig.memory.autoCapture
+            ? compileRememberGuide()
+            : '',
+          // 质检段也必须在预览里出现。
+          //
+          // 漏掉它的后果不是「少显示一段」——预览是唯一一个「模型这一轮到底看到什么」
+          // 的对外答案，少了这一段就等于对外保证了一份与实际注入不符的文本。
+          // 同一个疏漏此前在 getSystemPrompt 上犯过一次，这里不再犯第二次。
+          quality: compileQualitySection(globalConfig.quality)
         },
         // 预览的是「配置生效时」的文本。插件被关掉时实际注入的是关闭声明，
         // 那属于状态而不是人设，用 enabled 单独表达，不塞进 sections 里冒充一段设定。
@@ -1036,9 +1649,134 @@ function registerRoutes(ctx) {
       send(res, 200, { ok: true, removed })
     })
 
+    // 改写一条已有记忆的元数据（类型 / 生命周期 / 复核点 / 来源引用）。
+    //
+    // 为什么单独开一条路由而不是塞进 memory/decide：decide 的语义是「用户裁决这条
+    // 要不要留下」，它只能改 status；而分类是在「已经留下的」条目上做的二次整理。
+    // 两者混在一个接口里，将来任何一次误传 decision 值都会同时改动裁决状态。
+    route('/api/anima/memory/meta', async (req, res) => {
+      const parsed = await readJsonBody(req)
+      const id = String(parsed?.id ?? '')
+      if (!id) {
+        send(res, 400, { ok: false, error: '缺少 id' })
+        return
+      }
+      const record = await runtime.store.getMemory(id)
+      if (!record) {
+        send(res, 404, { ok: false, error: `找不到记忆 ${id}` })
+        return
+      }
+      // 取代指针必须指向一条真的存在的记忆。活着的时候不查，将来读的人
+      // 会以为有一条点得开的「后来那条」，实际上什么也没有。
+      if (typeof parsed?.supersededBy === 'string' && parsed.supersededBy.trim() !== '') {
+        const other = await runtime.store.getMemory(parsed.supersededBy.trim())
+        if (!other) {
+          send(res, 400, { ok: false, error: `supersededBy 指向的记忆不存在：${parsed.supersededBy.trim()}` })
+          return
+        }
+      }
+      const applied = applyMemoryMeta(record, {
+        type: parsed?.type,
+        state: parsed?.state,
+        verifyAt: parsed?.verifyAt,
+        sourceRef: parsed?.sourceRef,
+        supersededBy: parsed?.supersededBy
+      })
+      if (!applied.ok) {
+        send(res, 400, { ok: false, error: applied.error })
+        return
+      }
+      // 一条都没变就别写盘，更别回「已更新」——那是谎报。
+      if (applied.changed.length === 0) {
+        send(res, 200, { ok: true, id, changed: [], record })
+        return
+      }
+      await runtime.store.putMemory(applied.record)
+      await reload(ctx, { refreshPrompt: true })
+      send(res, 200, { ok: true, id, changed: applied.changed, record: applied.record })
+    })
+
+    // 批量回填：一次提交多条 [{id, type, ...}]，逐条应用并汇总。
+    //
+    // 为什么必须有批量口：21 条旧记忆要补类型，逐条发 21 次请求意味着 21 次写盘
+    // 与 21 次提示词重注册；中途失败还会留下「一半有条目有一半没有」的状态，
+    // 而用户看到的只是一个失败提示，不知道已经改到哪儿了。
+    route('/api/anima/memory/meta/batch', async (req, res) => {
+      const parsed = await readJsonBody(req)
+      const items = Array.isArray(parsed?.items) ? parsed.items : []
+      if (items.length === 0) {
+        send(res, 400, { ok: false, error: 'items 不能为空' })
+        return
+      }
+      if (items.length > 500) {
+        send(res, 400, { ok: false, error: '一次最多 500 条' })
+        return
+      }
+      const results = []
+      let written = 0
+      for (const item of items) {
+        const id = String(item?.id ?? '')
+        if (!id) {
+          results.push({ id, ok: false, error: '缺少 id' })
+          continue
+        }
+        const record = await runtime.store.getMemory(id)
+        if (!record) {
+          results.push({ id, ok: false, error: `找不到记忆 ${id}` })
+          continue
+        }
+        if (typeof item?.supersededBy === 'string' && item.supersededBy.trim() !== '') {
+          const other = await runtime.store.getMemory(item.supersededBy.trim())
+          if (!other) {
+            results.push({ id, ok: false, error: `supersededBy 指向的记忆不存在：${item.supersededBy.trim()}` })
+            continue
+          }
+        }
+        const applied = applyMemoryMeta(record, {
+          type: item?.type,
+          state: item?.state,
+          verifyAt: item?.verifyAt,
+          sourceRef: item?.sourceRef,
+          supersededBy: item?.supersededBy
+        })
+        if (!applied.ok) {
+          results.push({ id, ok: false, error: applied.error })
+          continue
+        }
+        if (applied.changed.length > 0) {
+          await runtime.store.putMemory(applied.record)
+          written += 1
+        }
+        results.push({ id, ok: true, changed: applied.changed })
+      }
+      if (written > 0) await reload(ctx, { refreshPrompt: true })
+      // 逐条回执而不是只说「成功 N 条」：失败的那些必须带回原因，否则用户
+      // 无法判断是「这条不需要改」还是「这条改不了」。
+      send(res, 200, { ok: true, written, total: items.length, results })
+    })
+
     route('/api/anima/memory/triage', async (req, res) => {
       const result = await runTriage(ctx, { reason: 'manual' })
       send(res, result.ok ? 200 : 400, result)
+    })
+
+    // 手动跑一次巡夜。与定时调度走同一条判据（见 lib/patrol.mjs），
+    // 否则「手点一次」和「它自己跑一次」会给出不同答案，那这个机制就没法验。
+    route('/api/anima/patrol', async (req, res) => {
+      const result = await runPatrol(ctx, { reason: 'manual' })
+      send(res, result.ok ? 200 : 400, result)
+    })
+
+    // 记忆体检：只做机械能验的事（路径还在不在、复核点过没过），不改任何状态。
+    //
+    // 为什么不自动改：判断「这两条讲的是不是同一件事、新的有没有推翻旧的」是语义
+    // 判断，而记忆库一旦自动做语义判断，就会生成用户没说过的话。所以这里产出的
+    // 是**带证据的候选**，每条都附一条可以直接复制的 /anima mark 命令 ——
+    // 扫描可以自动，裁决必须由用户点。
+    route('/api/anima/memory/audit', async (req, res) => {
+      const records = await runtime.store.listMemories()
+      const result = auditMemories(records, { probe: (p) => existsSync(p) })
+      send(res, 200, { ok: true, ...result })
     })
 
     route('/api/anima/memory/add', async (req, res) => {
@@ -1047,7 +1785,13 @@ function registerRoutes(ctx) {
         text: parsed?.text,
         note: parsed?.note,
         source: 'manual',
-        scope: typeof parsed?.scope === 'string' ? parsed.scope : undefined
+        scope: typeof parsed?.scope === 'string' ? parsed.scope : undefined,
+        // 这三样以前没透传，于是「手动加一条」永远只能得到默认的 fact 分类：
+        // stance 与 event 在真实存储里因此恒为 0，「我改主意了→曾如此」那条
+        // 链路一次都没跑过（m06419 之后实测发现）。
+        type: typeof parsed?.type === 'string' ? parsed.type : undefined,
+        sourceRef: typeof parsed?.sourceRef === 'string' ? parsed.sourceRef : undefined,
+        verifyAt: typeof parsed?.verifyAt === 'string' ? parsed.verifyAt : undefined
       })
       if (!created.ok) {
         send(res, 400, { ok: false, error: created.error })
@@ -1179,6 +1923,15 @@ const SET_MEMORY_KEYS = new Set([
 ])
 
 /**
+ * 质检段可在命令行里改的键。
+ *
+ * 为什么这几个必须能从命令行关：质检层是唯一会**主动往对话里插消息**的部件，
+ * 一旦它误判（strict 模式的误报率本来就不低），用户得有一个不用改 JSON、
+ * 不用重启的方式立刻让它闭嘴。`quality.enabled=false` 就是那个刹车。
+ */
+const SET_QUALITY_KEYS = new Set(['enabled', 'ledgerLevel', 'strict', 'preStepCheck', 'maxFindingsInReminder'])
+
+/**
  * 命令行里按布尔解析的键。
  *
  * 为什么需要这份名单：`set trailEnabled=off` 里的 `off` 是**字符串**，
@@ -1188,11 +1941,15 @@ const SET_MEMORY_KEYS = new Set([
  */
 const SET_BOOLEAN_KEYS = new Set([
   'enabled', 'requireToolConfirmation', 'trailEnabled', 'workspaceOverridesEnabled',
-  'memory.enabled', 'memory.autoCapture', 'memory.nightlyTriage', 'memory.notifyOnSessionStart'
+  'memory.enabled', 'memory.autoCapture', 'memory.nightlyTriage', 'memory.notifyOnSessionStart',
+  'quality.enabled', 'quality.strict', 'quality.preStepCheck'
 ])
 
 /** 按整数解析的键。**范围不在这里判** —— 越界要报「必须是 0..23」，交给 sanitizeConfig。 */
-const SET_NUMBER_KEYS = new Set(['memory.nightlyHour', 'memory.maxPending', 'memory.maxInjected', 'memory.maxInjectedChars'])
+const SET_NUMBER_KEYS = new Set([
+  'memory.nightlyHour', 'memory.maxPending', 'memory.maxInjected', 'memory.maxInjectedChars',
+  'quality.maxFindingsInReminder'
+])
 
 const SET_BOOLEAN_WORDS = new Map([
   ['true', true], ['1', true], ['on', true], ['yes', true],
@@ -1224,6 +1981,9 @@ function setKeyPath(key) {
   const parts = String(key).split('.')
   if (parts.length === 2 && parts[0] === 'memory' && SET_MEMORY_KEYS.has(parts[1])) {
     return ['memory', parts[1]]
+  }
+  if (parts.length === 2 && parts[0] === 'quality' && SET_QUALITY_KEYS.has(parts[1])) {
+    return ['quality', parts[1]]
   }
   return null
 }
@@ -1278,7 +2038,7 @@ function registerCommands(ctx) {
     cmdCtx.commands.register({
       name: 'anima',
       description: '管理灵台：AI 名字、工作区覆盖与待审记忆缓冲区',
-      input: { hint: '[show|pending|adopt <id>|discard <id>|triage|name <名字>|set k=v …|enable|disable|confirm|reject|reset]' },
+      input: { hint: '[show|pending|adopt <id>|discard <id>|mark <id> type=… state=…|triage|patrol|checkup|audit|name <名字>|set k=v …|enable|disable|confirm|reject|reset]' },
       async handler(invocation) {
         const raw = String(invocation?.rawInput || '').trim()
         const spaceAt = raw.search(/\s/)
@@ -1310,6 +2070,19 @@ function registerCommands(ctx) {
               `AI 角色：${config.agentRole ? `${config.agentRole.slice(0, 60)}${config.agentRole.length > 60 ? '…' : ''}` : '（未设置）'}`,
               `工作区覆盖：${config.workspaceOverridesEnabled ? `已启用（目录 ${config.workspaceFileDir}）` : '已关闭'}`,
               `记忆层：${config.memory.enabled ? '已启用' : '已关闭'}；待审 ${runtime.pendingCount} 条，已采纳 ${runtime.adopted.length} 条`,
+              // 质检层的状态必须能被一眼看到：它是唯一会主动往对话里插消息的部件，
+              // 「我怎么突然被顶了」的答案应该在这里，而不是要用户去翻配置 JSON。
+              `质检层：${config.quality.enabled ? '已启用' : '已关闭'}（对账 ${config.quality.ledgerLevel}，严格 ${config.quality.strict ? '开' : '关'}，机制检查 ${config.quality.preStepCheck ? '开' : '关'}）`,
+              // 运行计数放在配置状态之后：配置说「应该是开的」，计数说「实际跑过几次」。
+              // 两者必须并排出现 —— 只有前者时，一个从未被调用过的钩子看起来完全正常。
+              `质检运行：已查 ${runtime.qualityStats.checks} 次，已提醒 ${runtime.qualityStats.reminders} 次`
+                + (runtime.qualityStats.suppressed > 0 ? `，被每轮上限压住 ${runtime.qualityStats.suppressed} 次` : '')
+                + describeSkips(runtime.qualityStats.skipped),
+              // 这几个数是**累计**的（跨重启），所以必须说清从什么时候开始算、
+              // 最后一次落盘是什么时候。只报「已查 N 次」而不报基准点，读者没法
+              // 判断这个 N 是本次启动的还是历史累计的 —— 那又变成了一句无法核对的话。
+              `质检计数：${runtime.qualityStats.startedAt ? `本次启动于 ${runtime.qualityStats.startedAt.slice(0, 19).replace('T', ' ')}，累计口径` : '仅本次运行（尚未落盘）'}`
+                + (runtime.qualityStats.flushedAt ? `；最后一次落盘 ${String(runtime.qualityStats.flushedAt).slice(0, 19).replace('T', ' ')}` : '；尚未落盘，重启会丢'),
               `存储：${runtime.store.srcKind ?? '未打开'}${runtime.store.srcPath ? ` (${runtime.store.srcPath})` : ''}${runtime.store.srcReason ? `　不可用原因：${runtime.store.srcReason} —— ${runtime.store.srcMessage ?? ''}` : ''}${runtime.store.srcDomainVersion !== null ? `　存储格式 v${runtime.store.srcDomainVersion}` : ''}`,
               // 最近一次人设变更是「谁在什么时候动了什么」——三个入口（设置页 / 本命令 / 模型工具）
               // 都可能改写人设，show 是唯一能一眼看到这件事的地方。只显示一条：它是诊断行，不是列表。
@@ -1345,6 +2118,48 @@ function registerCommands(ctx) {
             return { kind: 'success', text: `已${verb === 'adopt' ? '采纳' : '丢弃'}：${record.text}` }
           }
 
+          if (verb === 'mark') {
+            // 用法：/anima mark <id> type=fact state=superseded supersededBy=<另一条 id>
+            //
+            // 为什么要有命令行：回填时用户可能正在会话里，逐条开设置页太慢；
+            // 而「改已有记忆的分类」又不能靠模型工具（那等于让被检查者自己填考卷）。
+            const parts = rest.split(/\s+/).filter(Boolean)
+            const id = parts.shift() ?? ''
+            if (!id) return { kind: 'error', text: '用法：/anima mark <id> [type=…] [state=…] [supersededBy=<id>] [verifyAt=YYYY-MM-DD] [sourceRef=…]' }
+            const changes = {}
+            for (const token of parts) {
+              const at = token.indexOf('=')
+              if (at <= 0) return { kind: 'error', text: `看不懂这一项：${token}（应为 key=value）` }
+              const key = token.slice(0, at)
+              if (!['type', 'state', 'supersededBy', 'verifyAt', 'sourceRef'].includes(key)) {
+                return { kind: 'error', text: `不支持的键：${key}（只有 type / state / supersededBy / verifyAt / sourceRef）` }
+              }
+              changes[key] = token.slice(at + 1)
+            }
+            if (Object.keys(changes).length === 0) {
+              return { kind: 'error', text: '没有要改的项：至少给一个 type= / state= / supersededBy= / verifyAt= / sourceRef=' }
+            }
+            const record = await runtime.store.getMemory(id)
+            if (!record) return { kind: 'error', text: `找不到记忆 ${id}` }
+            // 指向的另一条必须真的存在，否则记下一个指向空气的指针，
+            // 读的人和将来的人都会以为有一条能点开的「后来那条」。
+            if (typeof changes.supersededBy === 'string' && changes.supersededBy !== '') {
+              const other = await runtime.store.getMemory(changes.supersededBy)
+              if (!other) return { kind: 'error', text: `supersededBy 指向的记忆不存在：${changes.supersededBy}` }
+            }
+            const applied = applyMemoryMeta(record, changes)
+            if (!applied.ok) return { kind: 'error', text: applied.error }
+            if (applied.changed.length === 0) {
+              return { kind: 'success', text: `没有变化（${Object.keys(changes).join('、')} 与现状相同）。` }
+            }
+            await runtime.store.putMemory(applied.record)
+            await reload(ctx, { refreshPrompt: true })
+            return {
+              kind: 'success',
+              text: `已更新 ${id}：${applied.changed.join('、')}\n  ${applied.record.text}`
+            }
+          }
+
           if (verb === 'triage') {
             const result = await runTriage(ctx, { reason: 'command' })
             if (!result.ok) return { kind: 'error', text: result.error }
@@ -1353,6 +2168,21 @@ function registerCommands(ctx) {
               kind: 'success',
               text: `整理完成：待审 ${s.pendingBefore} → ${s.pendingAfter}，自动清理 ${s.discardedTotal} 条。`
             }
+          }
+
+          if (verb === 'patrol' || verb === '巡夜') {
+            const result = await runPatrol(ctx, { reason: 'command' })
+            if (!result.ok) return { kind: 'error', text: result.error }
+            const { verdict, delivered } = result
+            const lines = [
+              `巡夜完成：待审 ${verdict.facts.pending} 条，体检 ${verdict.facts.flagged} 条，整理动过 ${verdict.facts.removed} 条。`
+            ]
+            // 说清「为什么没说」—— 只报有事之后，「没报」必须自己解释自己，
+            // 否则用户会以为它坏了。这一行就是那句解释。
+            lines.push(delivered > 0
+              ? `已汇报（${delivered} 个会话）。`
+              : '判定为无事，没有汇报。这条记录留在 meta.patrol 里，可反查。')
+            return { kind: 'success', text: lines.join('\n') }
           }
 
           if (verb === 'name') {
@@ -1420,6 +2250,107 @@ function registerCommands(ctx) {
             return { kind: 'success', text: `已更新：${shown}` }
           }
 
+          // 自检命令：把我上一条回答交给**同一套**机器判据重算一遍，并把判据本身摊开。
+          //
+          // 为什么必须有这个入口：pre-step 的提醒只在命中时出现，没命中时用户看到的
+          // 是「什么都没发生」—— 那和「检查根本没跑」长得一模一样。用户没法区分，
+          // 就只能靠信我。这个命令把「检查跑了没有、查了什么、没查什么」变成可主动索取的东西。
+          //
+          // 它刻意不做的事：不给分数，不说「通过」。没有 findings 只说明「机器在它
+          // 能查的那些形状上没抓到东西」，不等于内容正确 —— 这句话必须每次都印出来，
+          // 否则这个命令自己就成了新的表演面。
+          if (verb === 'checkup' || verb === '体检') {
+            // 记忆体检：和 /anima audit（检查我上一条回答）是两回事，别混。
+            // 那条查「我说的话」，这条查「记下来的东西还成不成立」。
+            const records = await runtime.store.listMemories()
+            const result = auditMemories(records, { probe: (p) => existsSync(p) })
+            const lines = []
+            // 截断必须写在第一行。放在末尾就等于：读者先看到「0 条要你看一眼」，
+            // 形成一个「全查过了」的印象，再看到「其实有 12 个没查」—— 先入为主的是前一句。
+            const truncHead = result.truncated?.records
+              ? `（另有 ${result.truncated.paths} 个路径超出单条上限没查）`
+              : ''
+            lines.push(`记忆体检：查了 ${result.checked} 条已采纳记忆，${result.clean} 条没问题，${result.flagged.length} 条要你看一眼${truncHead}。`)
+            lines.push('')
+            if (result.flagged.length === 0) {
+              // 这里以前无条件说「都没发现问题」。有截断时这句就是假话：
+              // 那 12 个路径确实没被探过，它们里面可能就有一个已经没了。
+              if (result.truncated?.records) {
+                lines.push(`机器验到的部分没发现问题，但**没有查全**：${result.truncated.note}`)
+              } else {
+                lines.push('机器能验的两项（路径还在不在、复核点过没过）都没发现问题。')
+              }
+              lines.push('　注意：这只说明「写下来的路径和日期还对得上」，不说明这些话现在仍然成立。')
+            } else {
+              for (const item of result.flagged) {
+                lines.push(`- ${item.id}`)
+                lines.push(`　${String(item.text).slice(0, 60)}${String(item.text).length > 60 ? '…' : ''}`)
+                for (const f of item.findings) {
+                  lines.push(`　· ${f.detail}`)
+                  lines.push(`　　证据：${f.evidence}`)
+                }
+                if (item.suggestion.state) {
+                  lines.push(`　建议：${item.suggestion.why}`)
+                } else {
+                  lines.push(`　建议：${item.suggestion.why}`)
+                }
+                lines.push(`　执行：${item.suggestion.command}`)
+              }
+            }
+            lines.push('')
+            if (result.truncated?.records) lines.push(result.truncated.note)
+            lines.push(result.note)
+            lines.push('这条命令不会改任何状态；上面每条都是候选，要你自己敲一次才会生效。')
+            return { kind: 'success', text: lines.join('\n') }
+          }
+
+          if (verb === 'audit' || verb === '检查') {
+            const agent = invocation?.agent
+            const session = agent?.session
+            if (!session || typeof session.snapshotEvents !== 'function') {
+              return { kind: 'error', text: '当前会话读不到消息记录，无法检查。' }
+            }
+            const events = session.snapshotEvents()
+            let last = null
+            for (let i = events.length - 1; i >= 0; i -= 1) {
+              if (events[i]?.type === 'assistant/message') { last = events[i]; break }
+            }
+            if (!last) return { kind: 'success', text: '这个会话里还没有助手回答可供检查。' }
+            const body = eventText(last)
+            if (body === '') return { kind: 'success', text: '上一条助手消息里没有文本内容（可能只有工具调用），没有可检查的文字。' }
+
+            const q = runtime.config.quality
+            const result = checkResponse(body, { ledgerLevel: q.ledgerLevel, strict: q.strict === true })
+            const triggers = detectLedgerTriggers(body, q.ledgerLevel)
+            const lines = []
+            lines.push(`检查对象：本会话最后一条助手回答（${body.length} 字，事件 seq=${last.seq ?? '未知'}）`)
+            lines.push(`判据版本：对账档位 ${q.ledgerLevel}，严格模式 ${q.strict ? '开' : '关'}`)
+            lines.push('')
+            if (triggers.hits.length === 0) {
+              lines.push('对账触发：没有命中任何一档（不含数字/日期、没有「已确认」类断言、没有归属引用）。')
+            } else {
+              lines.push(`对账触发：命中 ${triggers.hits.length} 条 —— ${triggers.hits.map((h) => `${h.tier}「${h.excerpt}」`).join('；')}`)
+            }
+            lines.push(`对账块：${hasLedgerBlock(body) ? '有' : '没有'}`)
+            lines.push('')
+            if (result.findings.length === 0) {
+              lines.push('机器判词：在它能查的形状上没抓到问题。')
+              lines.push('　注意：这不等于内容正确，也不等于十二条全过（见下面的未查清单）。')
+            } else {
+              lines.push(`机器判词：${result.findings.length} 处`)
+              for (const f of result.findings) {
+                lines.push(`　- ${f.ruleId} ${f.name}（${f.severity}）：${f.detail}`)
+                if (f.excerpt) lines.push(`　　原文：「${f.excerpt}」`)
+              }
+            }
+            lines.push('')
+            lines.push(`本次检查了：${result.checked.length > 0 ? result.checked.join('、') : '（无）'}`)
+            lines.push(`本次未查：${result.uncovered.map((r) => r.id).join('、') || '（无）'} —— 这些机器判不了，只能由你自己看。`)
+            lines.push('')
+            lines.push('说明：这条结论由代码按固定正则算出，不经过模型。它能证明「某个形状在不在」，不能证明「内容对不对」。')
+            return { kind: 'success', text: lines.join('\n') }
+          }
+
           if (verb === 'confirm' || verb === 'reject') {
             const proposal = runtime.pendingProposal
             if (!proposal) {
@@ -1447,7 +2378,7 @@ function registerCommands(ctx) {
             return { kind: 'success', text: '全局配置已重置为默认值（记忆与工作区覆盖未动）。' }
           }
 
-          return { kind: 'error', text: `未知子命令 ${verb}。可用：show|pending|adopt|discard|triage|name|set|enable|disable|confirm|reject|reset` }
+          return { kind: 'error', text: `未知子命令 ${verb}。可用：show|pending|adopt|discard|mark|triage|checkup|audit|name|set|enable|disable|confirm|reject|reset` }
         } catch (err) {
           return { kind: 'error', text: `执行失败：${String(err?.message || err)}` }
         }
@@ -1471,12 +2402,31 @@ function registerTools(ctx) {
           '把一条值得长期记住的信息投递到待审缓冲区。',
           '注意：投递只是「提名」，不会立即生效 —— 内容要等用户在设置页里采纳后才会进入长期记忆。',
           '适用于用户明确表达的稳定偏好、长期约束、重要背景；不要记录临时任务状态、寒暄或可从代码/文件直接读出的信息。',
+          '请尽量给出 type（这条是什么）与 sourceRef（凭什么记这条）：没有来源的记忆，日后无法核对真假。',
           '不要在此写入任何密钥、令牌、密码；凭据会被直接拒绝。'
         ].join(''),
         parameters: {
           text: { type: 'string', description: '要记住的完整陈述句（不超过 500 字）' },
           note: { type: 'string', description: '可选：为什么值得记住，便于用户裁决' },
-          scope: { type: 'string', description: '可选：该记忆的适用范围标注（如 global / 项目名）' }
+          scope: { type: 'string', description: '可选：该记忆的适用范围标注（如 global / 项目名）' },
+          type: {
+            type: 'string',
+            // 不做 enum：宿主参数 DSL 允许 enum，但这里刻意不用 —— 模型面对封闭枚举时
+            // 会倾向硬套一个「最像的」，而「这条既像偏好又像立场」正是需要它说清楚的时刻。
+            // 写错的值由 lib/memory.mjs 归一成默认类型，不会污染介质。
+            description: '可选：这条记忆是什么 —— fact〔事实〕/ preference〔偏好〕/ stance〔立场〕/ event〔事件〕。'
+              + '四者的失效方式不同：事实改了才覆盖，偏好半衰期很长，立场在「我改主意了」时要归档成「曾如此」，事件永不失效但会归档。'
+          },
+          sourceRef: {
+            type: 'string',
+            description: '可选：凭什么记这条 —— 可反查的出处（如 m00123 这类消息编号、文件:行号、URL）。'
+              + '不接受「对话里说过」这种无法核对的表述；没有出处就留空，不要编。'
+          },
+          verifyAt: {
+            type: 'string',
+            description: '可选：复核点（YYYY-MM-DD）。到这天之后注入时会标注「可能已过时」，由用户决定要不要更新。'
+              + '只给状态类记忆设复核点（「最近在焦虑什么」），事实类（职业、技术栈）不要设。'
+          }
         },
         output: {
           schema: {
@@ -1522,6 +2472,9 @@ function registerTools(ctx) {
             text: args?.text,
             note: args?.note,
             scope: args?.scope,
+            type: args?.type,
+            sourceRef: args?.sourceRef,
+            verifyAt: args?.verifyAt,
             source: 'agent',
             cwd: typeof cwd === 'string' ? cwd : undefined
           })
@@ -1733,13 +2686,23 @@ export async function apply(ctx) {
         : null
       const { effective } = mergePersona(config, overrides)
       const memory = config.memory.enabled
-        ? compileMemory(selectForInjection(runtime.adopted, config.memory.maxInjected, {
-          maxInjectedChars: config.memory.maxInjectedChars,
-          cwd: workspacePath ?? ''
-        }).selected)
+        ? (() => {
+          const selection = selectForInjection(runtime.adopted, config.memory.maxInjected, {
+            maxInjectedChars: config.memory.maxInjectedChars,
+            cwd: workspacePath ?? ''
+          })
+          return compileMemory(selection.selected, summarizeOmission(selection))
+        })()
         : ''
       const pending = config.memory.enabled ? compilePendingNotice(runtime.pendingCount) : ''
-      return [compilePersona(effective), memory, pending].filter(Boolean).join('\n\n')
+      // remember 指引段的门控必须与 rememberText 逐条一致（含 autoCapture）：
+      // 这个方法是「模型这一轮到底看到什么」的权威答案，多一段少一段都是错的。
+      const remember = config.memory.enabled && config.memory.autoCapture ? compileRememberGuide() : ''
+      // 质检段必须在这里也出现：这个方法的名字是 getSystemPrompt，调用方拿它当
+      // 「模型这一轮到底看到什么」的权威答案。漏掉质检段就等于对外保证了一个
+      // 与实际注入不符的文本 —— 正是本方法注释里说要避免的那种坏。
+      const quality = compileQualitySection(config.quality)
+      return [compilePersona(effective), memory, pending, remember, quality].filter(Boolean).join('\n\n')
     },
     /**
      * 重置全局人设（保留记忆、预设与工作区覆盖）。
@@ -1775,10 +2738,21 @@ export async function apply(ctx) {
     },
     async runTriage() {
       return runTriage(ctx, { reason: 'api' })
+    },
+    /**
+     * 手动跑一次巡夜（整理 + 体检 + 决定说不说）。
+     *
+     * 手动触发与定时触发走**同一条**判据：如果手动那次无视「指纹没变就不说」，
+     * 用户就永远测不到定时触发的真实行为 —— 手点一次和它自己跑一次会给出
+     * 不同答案的机制，等于没法验证。
+     */
+    async runPatrol() {
+      return runPatrol(ctx, { reason: 'api' })
     }
   })
 
   registerSystemPrompt(ctx)
+  registerQualityHook(ctx)
   registerRoutes(ctx)
   registerCommands(ctx)
   registerTools(ctx)
@@ -1828,19 +2802,26 @@ export async function apply(ctx) {
         if (!config.memory.enabled || !config.memory.nightlyTriage) return
         const last = await state.lastTriageDay()
         if (last !== dayKey()) {
-          await runTriage(ctx, { reason: 'catch-up' })
+          await runPatrol(ctx, { reason: 'catch-up' })
         }
       } catch (err) {
-        warn(ctx, `启动补跑整理失败：${String(err?.message || err)}`)
+        warn(ctx, `启动补跑巡夜失败：${String(err?.message || err)}`)
       }
     })()
     return () => {
       cancelled = true
       scheduler.clear()
     }
-  }, 'dsh-anima: catch-up triage')
+  }, 'dsh-anima: catch-up patrol')
 
   ctx.effect(() => () => {
+    // 卸载前把计数落一次盘：节流窗口里攒下的那些数字，如果不在这里写，
+    // 就随着进程消失 —— 而那恰好是「刚跑了几十步就退出」的场景，最需要它。
+    // 注意顺序：先取到 store，再清空 runtime，否则 flushQualityStats 拿不到后端。
+    const store = runtime.store
+    if (store) {
+      try { void flushQualityStats(store) } catch { /* 卸载失败不阻塞退出 */ }
+    }
     runtime.ctx = null
     runtime.store = null
     runtime.refresh = null
