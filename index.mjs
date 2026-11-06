@@ -57,8 +57,7 @@ import {
   findActivePreset,
   listPresets,
   resolvePreset,
-  sanitizeCustomPreset,
-  sanitizeCustomPresets
+  sanitizeCustomPreset
 } from './lib/presets.mjs'
 import {
   configChangedNoticeText,

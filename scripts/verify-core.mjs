@@ -2874,6 +2874,19 @@ test('注入消息的角色与来源仍合规：kind 自持、form 为 snapshot'
   assert.ok(Array.isArray(message.source.sections) && message.source.sections.length > 0)
 })
 
+// ==================== 版本一致性 ====================
+
+test('客户端徽标版本与 package.json 的 version 一致', () => {
+  // 源码级断言，理由同上：client/index.mjs 是浏览器侧模块，这里不能 import。
+  // 守的场景很具体：发版时只改了 package.json，设置页徽标仍显示旧号，
+  // 用户报 bug 时报的那个「v1.0.0」对不上任何一次发布。
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  const source = readFileSync(new URL('../client/index.mjs', import.meta.url), 'utf8')
+  const found = /const\s+VERSION\s*=\s*['"]([^'"]+)['"]/.exec(source)
+  assert.ok(found, 'client/index.mjs 里找不到 const VERSION = "..."')
+  assert.equal(found[1], pkg.version, `客户端 VERSION=${found[1]} 与 package.json version=${pkg.version} 不一致`)
+})
+
 // ==================== 汇总 ====================
 
 await drainAsyncTests()

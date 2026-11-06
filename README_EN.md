@@ -124,6 +124,11 @@ Keeping tool names apart is not mere courtesy: `dsh-tools`' `register()` **throw
 (the `NamedEntries` conflict factory in `lib/index.js`). With both installed, one necessarily fails to register
 and gets swallowed by `.catch` into a single `warn` line — a release-grade silent failure.
 
+This section covers only the two projects whose *feature set* we drew on. Under `docs/peers/` there are
+**read-only research notes on a dozen further plugins in the same ecosystem** (mechanisms, line numbers,
+quoted pitfalls), with no code copied from any of them. Their repository URLs, SPDX licences and the
+date the figures were taken are all recorded in [`docs/THIRD-PARTY-NOTES.md`](docs/THIRD-PARTY-NOTES.md).
+
 ## Core design: three-stage memory
 
 This is where this plugin differs most from the 15+ memory plugins on the market.
