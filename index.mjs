@@ -1,8 +1,8 @@
 // index.mjs — dsh-anima（host 半边）
 //
 // 定位（用户 m03846 拍板「A 自建补齐」）：
-//   本插件**自持全部人设字段**，不依赖任何其它插件。字段设计对照 WorkBuddy
-//   设置页（「个性化」+「记忆与进化」两页）与 dsh-soul 0.7.0 的字段集，但代码
+//   本插件**自持全部人设字段**，不依赖任何其它插件。字段设计对照某产品
+//   设置页（「个性化」+「记忆与进化」两页）与某同类人设插件 0.7.0 的字段集，但代码
 //   全部自写 —— 字段名、界面布局、功能划分属思想，不受版权保护；MIT 只约束代码复制。
 //
 //   三类能力：
@@ -13,11 +13,11 @@
 // 独立插件：字段集不依赖任何其它插件，装上即可用。
 //
 // 三条硬约束（取证所得，改动这里前先读）：
-//   - section 名必须避开 `soul:persona` / `deployment:persona-prefix` / `deployment:persona-suffix`
+//   - section 名必须避开 它注册的那条 context / `deployment:persona-prefix` / `deployment:persona-suffix`
 //   - `section.text` 可以是函数，但装配期是**同步**调用（dsh-system-prompt\lib\index.js:342），
 //     所以工作区覆盖的读取必须走同步路径（lib/workspace.mjs 的 resolveOverridesFromCwdSync）
 //   - 会话格式 v4 要求注入消息自持 producer kind（lib/injection.mjs）
-//   - 存储层**没有文件后端兜底**（2026-10-10 决定，与 dsh-checkpoint-rewind 的取舍一致）：
+//   - 存储层**没有文件后端兜底**（2026-10-10 决定，与某同生态插件的取舍一致）：
 //     storageDomain 缺失或打开失败时抛 StorageUnavailableError（statusCode 503），
 //     由路由与命令各自呈现给用户；首次装载失败时挂 ctx.inject 就绪信号重试一次，
 //     绝不悄悄换一个落盘点。未装载成功前，五段 section 一律返回空串 —— 宁可没有人设，
@@ -107,9 +107,9 @@ const LOG = '[dsh-anima]'
 
 // 排在 DEPLOYMENT_PERSONA_PREFIX(0) 之后、PLAN_POLICY(500) 之前。
 //
-// 这里**不要**再写「与 dsh-soul 的 soul:persona（order 0）错开」——
-// 那是 1.0.0 时期的注释，现在已经不成立：dsh-agent-soul 早就把
-// `soul:persona` 改成 context（`_research/agentsoul/lib/index.js:633`），
+// 这里**不要**再写「与某同类人设插件注册的那条 section（order 0）错开」——
+// 那是 1.0.0 时期的注释，现在已经不成立：那款插件早就把它
+// 从 section 改成了 context（本机调研副本 `lib/index.js:633`），
 // 而 section 与 context 是两条互不相干的数轴（宿主
 // `SECTION_ORDERS` / `CONTEXT_ORDERS` 各自独立排序，见
 // docs/host-prompt-semantics.md 第 1 节）。拿别人的 section order
@@ -188,7 +188,7 @@ const runtime = {
   loaded: false,
   /**
    * 待确认的人设变更提议（confirm 模式用；进程内短生命周期，不做持久化）。
-   * 与 dsh-soul 的 `pendingPersonaProposal` 同款设计：它只是「模型提了个请求，
+   * 与某同类人设插件的 `pendingPersonaProposal` 同款设计：它只是「模型提了个请求，
    * 等用户点头」的暂存区，重启即失效 —— 一份没被确认的提议本就不该跨会话活着。
    */
   pendingProposal: null,
@@ -538,7 +538,7 @@ function registerSystemPrompt(ctx) {
         try { d() } catch { /* 已释放 */ }
       }
       // 先释放旧 section 再注册新的，触发 system-prompt/change，
-      // 让 DSH 丢弃当前会话已缓存的 system prompt 快照（手法同 dsh-soul）。
+      // 让 DSH 丢弃当前会话已缓存的 system prompt 快照（手法同某同类人设插件）。
       //
       // `interpolate: false` 是必需的安全阀，不是性能优化。
       // 宿主 renderPrompt 会对每个 section 跑 interpolate()，规则是：
@@ -1502,7 +1502,7 @@ function registerRoutes(ctx) {
     // 2026-10-10 的事故：我为确认路由是否注册，对写路由逐一 POST 空体 `{}`，
     // 这条当场 200 并把人设重置成默认值 —— 三个字段被清空。设置页的按钮是
     // 人类点的，但「空 body 就等于确认」这个默认值本身就是缺陷。
-    // 与 dsh-checkpoint-rewind 的失败关闭（fail closed）语义一致：
+    // 与某同生态插件的失败关闭（fail closed）语义一致：
     // 拿不到明确确认就什么都不做，并说明怎么做才有效。
     route('/api/anima/config/reset', async (req, res) => {
       const parsed = await readJsonBody(req)
@@ -1988,7 +1988,10 @@ function setKeyPath(key) {
 }
 
 /** 按点路径取值，用于把「改成了什么」念回给用户（`memory.maxInjected` 取不到就直接下标）。 */
-const readPath = (obj, key) => key.split('.').reduce((acc, part) => (acc == null ? acc : acc[part]), obj)
+// 这里刻意同时挡 null 与 undefined（原写法 `acc == null` 是两者的并集）：
+// 只用 `acc === null` 会在中间键缺失（undefined）时抛 TypeError。
+const isNullish = (value) => value === null || value === undefined
+const readPath = (obj, key) => key.split('.').reduce((acc, part) => (isNullish(acc) ? acc : acc[part]), obj)
 
 /** 补丁展平成点路径集合，只用于比对「哪些键真的被 sanitizeConfig 吃下了」。 */
 function flattenPatch(patch) {
@@ -2063,10 +2066,17 @@ function registerCommands(ctx) {
             const recentAudit = loadError
               ? null
               : (await runtime.store.listAudit().catch(() => [])).at(-1) ?? null
+            // 角色可能很长，展示时截到 60 字并补省略号；未设置时给占位文案。
+            // 拆出来是为了不写嵌套三元（规则禁止）。
+            const rolePreview = (() => {
+              if (!config.agentRole) return '（未设置）'
+              const head = config.agentRole.slice(0, 60)
+              return config.agentRole.length > 60 ? `${head}…` : head
+            })()
             const lines = [
               `灵台：${config.enabled ? '已启用' : '已关闭'}`,
               `AI 名字：${config.agentName || '（未设置）'}`,
-              `AI 角色：${config.agentRole ? `${config.agentRole.slice(0, 60)}${config.agentRole.length > 60 ? '…' : ''}` : '（未设置）'}`,
+              `AI 角色：${rolePreview}`,
               `工作区覆盖：${config.workspaceOverridesEnabled ? `已启用（目录 ${config.workspaceFileDir}）` : '已关闭'}`,
               `记忆层：${config.memory.enabled ? '已启用' : '已关闭'}；待审 ${runtime.pendingCount} 条，已采纳 ${runtime.adopted.length} 条`,
               // 质检层的状态必须能被一眼看到：它是唯一会主动往对话里插消息的部件，
@@ -2504,13 +2514,13 @@ function registerTools(ctx) {
         }
       }))
 
-      // ── 工具：改人设（对照 dsh-soul 的 set_persona） ──────────────────────────
+      // ── 工具：改人设（同生态的插件普遍把这个工具叫同一个名字） ────────────────
       //
-      // **名字刻意不叫 `set_persona`**：dsh-tools 的命名表遇重名直接抛
+      // **名字刻意与它们错开**：dsh-tools 的命名表遇重名直接抛
       //   `tool "${name}" is already registered (for a per-agent variant, register
       //    through that agent's \`agent.ctx\` instead)`
       // （dsh-tools\lib\index.js:2634 的 NamedEntries 冲突工厂），且注册顺序决定谁死。
-      // dsh-soul 也用这个名字，两边共存时必有一方的工具凭空消失；对本机是过渡期的
+      // 同生态的几款插件也用这个名字，共存时必有一方的工具凭空消失；对本机是过渡期的
       // 静默故障，对将来的用户（可能同时装着两者）是发布级缺陷。功能对齐不要求撞名。
       //
       // 参数里的六个风格字段是**自由文本**，不是枚举（用户 m06593 ① 已定「全字段自由文本」）。
@@ -2650,7 +2660,7 @@ export async function apply(ctx) {
     }
   }
 
-  // 公开服务：供其它插件或脚本读取有效人设（dsh-soul 的 soulConfig 是同类做法）
+  // 公开服务：供其它插件或脚本读取有效人设（同生态里的人设插件也各有同类服务）
   ctx.provide('animaConfig', {
     /** 有效人设（全局 + 指定工作区合并后的结果） */
     async getEffective(workspacePath) {
@@ -2763,7 +2773,7 @@ export async function apply(ctx) {
   // 一次性 ctx.get() 判空后「退化到文件」，结果是冷启动时静默换了一个落盘点，
   // 用户先前填的人设读不出来（2026-10-10 实测）。
   //
-  // 现在的做法（与 dsh-checkpoint-rewind 的「惰性解析」一致 + 本仓实证的就绪信号）：
+  // 现在的做法（与某同生态插件的「惰性解析」一致 + 本仓实证的就绪信号）：
   //   - 服务缺失 ⇒ 挂 ctx.inject 等它就绪，届时重试一次（探针实证：服务晚提供时
   //     回调会被触发；已就绪则立即触发）；
   //   - 其它失败（词汇表缺失 / open 被拒）⇒ 服务是就绪的，重试没有意义，告警即可。

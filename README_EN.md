@@ -46,9 +46,9 @@ the content is right. See "[Answer check layer](#answer-check-layer)" below.
 | Automatic writing of long-term memory | ❌ Deliberately not implemented (see below) |
 | Conclusions such as "the check passed" | ❌ Deliberately unsupported (see the "Answer check layer" section) |
 
-### On the relationship with `dsh-soul`
+### On the relationship with `某同类人设插件`
 
-The capability grouping above **overlaps** the field set of `dsh-soul` 0.7.0, and the implementation deliberately stays consistent with it (tool-confirmation semantics, light-trail animation parameters, presets preserved on reset). But this plugin **does not depend on it**: the field set is fully self-contained, it reads config from nowhere else, the two can be installed side by side, and all identifiers are kept apart. The full account is in [Acknowledgements and differentiation statement](#acknowledgements-and-differentiation-statement) below.
+The capability grouping above **overlaps** the field set of `某同类人设插件` 0.7.0, and the implementation deliberately stays consistent with it (tool-confirmation semantics, light-trail animation parameters, presets preserved on reset). But this plugin **does not depend on it**: the field set is fully self-contained, it reads config from nowhere else, the two can be installed side by side, and all identifiers are kept apart. The full account is in [Acknowledgements and differentiation statement](#acknowledgements-and-differentiation-statement) below.
 
 ## Four differentiating design choices
 
@@ -100,34 +100,35 @@ Field names are rendered as plain language in the UI (`agentName` → "My name",
 
 ## Acknowledgements and differentiation statement
 
-This plugin's feature set **draws on** the designs of [dsh-soul](https://github.com/Aliuyanfeng/dsh-soul) (MIT) and
-`dsh-checkpoint-rewind`, and deliberately keeps behaviour consistent with them in several places (lazy storage resolution, fail-closed confirmation semantics, preserving user presets across a reset, and the light-trail animation parameters).
+This plugin's feature set was designed with reference to several persona plugins already in the same ecosystem (all MIT licensed),
+and deliberately keeps behaviour consistent with them in several places (lazy storage resolution, fail-closed confirmation semantics, preserving user presets across a reset, and the light-trail animation parameters).
 
 To be explicit:
 
 - **All code is independently implemented.** No source code, comments, prompt wording, or graphic assets were copied from the aforementioned projects.
 - Two **animation parameters are deliberately given identical values** (8 staggered stroke layers, dash length 12 / step 2.2 / corner radius 22, etc.). The reason is to avoid two divergent looks on the same machine. Such numeric values are ideas and parameters, not protected by copyright; they are recorded here so that readers do not mistake them for copying.
-- **The navigation icon is deliberately drawn differently**: dsh-soul uses "light-trail arc + spark", while this plugin uses "person (head + shoulders) + spark", in monochrome `currentColor`, with a separately tightened viewBox.
+- **The navigation icon is deliberately drawn differently**: other persona plugins use "light-trail arc + spark", while this plugin uses "person (head + shoulders) + spark", in monochrome `currentColor`, with a separately tightened viewBox.
 - **All identifiers are kept apart**, so that coexistence cannot displace or fail to register against the other:
 
-  | Category | dsh-soul | This plugin |
+  | Category | Other plugins | This plugin |
   |---|---|---|
-  | Tool name | `set_persona` | `set_assistant_persona` |
-  | Settings page id | `soul-settings` | `anima-settings` |
-  | Light-trail slot id | `soul-trail` | `anima-trail` |
-  | Toggle slot id | `soul-quick-toggle` | `anima-quick-toggle` |
-  | Prompt section | `soul:persona` | `anima:identity` / `:memory` / `:pending` |
+  | Tool name | their own same-named tools | `set_assistant_persona` |
+  | Settings page id | their own page ids | `anima-settings` |
+  | Light-trail slot id | their own slot ids | `anima-trail` |
+  | Toggle slot id | their own slot ids | `anima-quick-toggle` |
+  | Prompt section | the context they register | `anima:identity` / `:memory` / `:pending` |
   | Storage domain | — (its own file) | `anima` |
-  | Injection source kind | `plugin:dsh-soul` | `plugin:dsh-anima` |
+  | Injection source kind | their own prefix | `plugin:dsh-anima` |
 
 Keeping tool names apart is not mere courtesy: `dsh-tools`' `register()` **throws outright** on a same-level duplicate name
 (the `NamedEntries` conflict factory in `lib/index.js`). With both installed, one necessarily fails to register
 and gets swallowed by `.catch` into a single `warn` line — a release-grade silent failure.
 
-This section covers only the two projects whose *feature set* we drew on. Under `docs/peers/` there are
-**read-only research notes on a dozen further plugins in the same ecosystem** (mechanisms, line numbers,
-quoted pitfalls), with no code copied from any of them. Their repository URLs, SPDX licences and the
-date the figures were taken are all recorded in [`docs/THIRD-PARTY-NOTES.md`](docs/THIRD-PARTY-NOTES.md).
+This section summarises the acknowledgement without naming individual projects — the published package
+contains no third-party project names at all. Under `docs/` there are **read-only research notes on a dozen
+further plugins in the same ecosystem** (mechanisms, line numbers, quoted pitfalls), with no code copied from
+any of them; their repository URLs, SPDX licences and the date the figures were taken are recorded in
+`docs/THIRD-PARTY-NOTES.md`. `docs/` is not listed in `package.json`'s `files`, so it **does not ship in the package**.
 
 ## Core design: three-stage memory
 
@@ -436,7 +437,7 @@ The near-duplicate hint deliberately only hints and never merges: auto-merging w
 The plugin is not published to npm yet; install it straight from the repository:
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
+dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 ```
 
 Or edit the profile's `package.json` by hand:
@@ -444,13 +445,13 @@ Or edit the profile's `package.json` by hand:
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v1.0.0"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.0.0"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v1.0.0` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
+`#v2.0.0` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
 otherwise any upstream change lands in your profile on the next install. A git source downloads the
 **whole repository tarball** (this one is small), so the first install may be slower than an npm source;
 retry once if it times out.
@@ -605,9 +606,9 @@ the second is a tab switch, which must keep the tree or every unsaved form value
 
 ### No migrations at all
 
-This plugin **reads no config belonging to another plugin, nor to an earlier version of itself**. It is 1.0.0 and has never been released — there is no such thing as "an existing user's medium" to stay compatible with, so the code carries neither one-shot migrations nor storage-format fallback. Both existed during development and were deleted; the only thing keeping them would achieve is making later readers believe a population of legacy users exists.
+This plugin **reads no config belonging to another plugin, nor to an earlier version of itself**. It released 1.0.0, and 1.0.0 and 2.0.0 use exactly the same storage format (`DOMAIN_VERSION` is 1 in both, with identical specs for the config / memories / meta / audit tables) — there is no "existing user's medium" to stay compatible with, so the code carries neither one-shot migrations nor storage-format fallback. Both existed during development and were deleted; the only thing keeping them would achieve is making later readers believe a population of legacy users exists.
 
-If a storage format bump ever becomes necessary: change only `DOMAIN_VERSION` in `lib/store.mjs`, and **decide first what happens to existing users' media** — that decision must not be improvised after release, because by then the media is already on their machines. For the shape of such a solution, see `dsh-checkpoint-rewind` in the same ecosystem (dual-spec serial fallback).
+If a storage format bump ever becomes necessary: change only `DOMAIN_VERSION` in `lib/store.mjs`, and **decide first what happens to existing users' media** — that decision must not be improvised after release, because by then the media is already on their machines. For the shape of such a solution, see `某同生态插件` in the same ecosystem (dual-spec serial fallback).
 
 ### All twelve fields are free text
 
@@ -651,7 +652,7 @@ The remaining 12 fields can be overridden per workspace, and the override is **f
 
 Config persistence: **only** through `storageDomain` (domain `anima` — note the underscore; the host's domain-name validation accepts only `^[a-z][a-z0-9_]*$`, so a hyphen is rejected).
 
-**Lazy resolution** (matching `dsh-checkpoint-rewind`'s approach): the service is not resolved during `apply`, but only via `ctx.get('storageDomain')` on first real use.
+**Lazy resolution** (matching `某同生态插件`'s approach): the service is not resolved during `apply`, but only via `ctx.get('storageDomain')` on first real use.
 `dsh-storage-domain`'s `apply` body is `ctx.inject(backendServices, …)` plus `provide('storageDomain', …)` inside the callback,
 where `backendServices` comes from `storage.backend.json` (provided by `storage-json`). If this plugin loads before `storage-json`,
 that single `ctx.get()` during `apply` is bound to return `undefined` — and this is precisely the root cause of the silent storage-backend degradation on the 2026-10-10 cold start:
@@ -662,7 +663,7 @@ failures are **not** memoised (so a later call succeeds once the service becomes
 When `index.mjs`'s `apply` hits it on the first `reload()`, it attaches cordis' native readiness signal
 `ctx.inject(['storageDomain'], …)` and retries after the service is provided (while a dependency is not ready the fiber stays PENDING, and the callback fires the moment the service is provided — verified in this repository with a real cordis probe). During that window the five sections return an empty string — better not to inject at all than to impersonate the default level.
 
-**No old-data rescue**: when `storageDomain` becomes available depends on load order, so the same person may have written config to a different landing spot in the early days. But this plugin is 1.0.0 — there are no "early-version users" — so opening the domain imports nothing and archives nothing; it just opens its own domain. If a migration ever does become necessary, the only safe shape is: act **only when the new domain has no `config` record**, and let every failure inside it be a `warn` rather than a throw (this code sits inside the domain-open `try`, so a throw would be wrapped as the *new* domain's `open-failed` and stall a plugin that should work fine).
+**No old-data rescue**: when `storageDomain` becomes available depends on load order, so the same person may have written config to a different landing spot in the early days. But 1.0.0 and 2.0.0 share the same storage format (DOMAIN_VERSION is 1, the same four tables), so there is no orphaned medium to rescue — so opening the domain imports nothing and archives nothing; it just opens its own domain. If a migration ever does become necessary, the only safe shape is: act **only when the new domain has no `config` record**, and let every failure inside it be a `warn` rather than a throw (this code sits inside the domain-open `try`, so a throw would be wrapped as the *new* domain's `open-failed` and stall a plugin that should work fine).
 
 **The unavailability reason is inspectable**: the `source` section of `GET /api/anima/state` carries `reason` (an error code) and `message` (the raw error),
 with values `storage-not-composed` / `vocabulary-unavailable` / `open-failed: <raw error>`;
@@ -672,22 +673,22 @@ When storage is unavailable that route returns **503 + `code`** rather than an e
 
 **A single format stamp, with no fallback**: the `single` layout of `storage-json` **hard-compares** the version stamp when opening —
 `unit.version !== descriptor.version` throws `version-mismatch` outright, with no automatic migration whatsoever. This plugin's domain version is **always 1**
-(`DOMAIN_VERSION` in `lib/store.mjs`) and declares exactly one spec with no serial fallback: nothing was released before 1.0.0, so there is no such thing as
+(`DOMAIN_VERSION` in `lib/store.mjs`) and declares exactly one spec with no serial fallback: 1.0.0 and 2.0.0 carry the same format stamp, so there is no such thing as
 "an existing user's v2/v3 medium" to read.
 
 During development there was a compatibility fallback (`open()` attempted **serially** over `[v3, v2, v1]`, continuing only on `version-mismatch`);
 it was deleted together with the unreleased v2/v3 formats. The lesson from that code is kept here because it will be needed the day the format does change:
 **declaring `compatibleVersions` amounts to writing nothing** — it is read only by `acceptedStamps()` of the per-record layout, and the single layout's
-`parse()` does not look at it at all. Genuine multi-version support means declaring **two specs** the way `dsh-checkpoint-rewind` does (primary + tolerant),
+`parse()` does not look at it at all. Genuine multi-version support means declaring **two specs** the way `某同生态插件` does (primary + tolerant),
 and the tolerant spec must declare **all four tables** — `DomainImpl.table()` throws outright for an undeclared table, and missing one blows up at the next
 `table('audit')` call.
 
-**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`1.0.0`, the badge in the top-right of the settings page);
+**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.0.0`, the badge in the top-right of the settings page);
 the storage format stamp is a single digit (currently 1). The two are unrelated. Wherever the format stamp appears in the UI it is written "storage format vN",
 and wherever the plugin version appears it carries a decimal point — mixing them as "this build's v3" leaves the user unable to tell which number means their
 installed plugin is out of date. The zero-reference `CONFIG_VERSION = 3` in `lib/config.mjs` was deleted for exactly that reason: to avoid manufacturing a second "v3".
 
-**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`1.0.0`, the badge in the settings page header), while the storage format stamp is a single digit (1 / 2 / 3). The two are unrelated. Everywhere the format stamp appears the UI says "storage format vN", and everywhere the plugin version appears it carries a decimal point — mixing them as "this build is v3" leaves the user unable to tell which number is telling them their plugin is old. The unreferenced `CONFIG_VERSION = 3` in `lib/config.mjs` was removed precisely so a second "v3" is not manufactured.
+**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.0.0`, the badge in the settings page header), while the storage format stamp is a single digit (1 / 2 / 3). The two are unrelated. Everywhere the format stamp appears the UI says "storage format vN", and everywhere the plugin version appears it carries a decimal point — mixing them as "this build is v3" leaves the user unable to tell which number is telling them their plugin is old. The unreferenced `CONFIG_VERSION = 3` in `lib/config.mjs` was removed precisely so a second "v3" is not manufactured.
 
 ## Prompt sections
 
@@ -731,7 +732,7 @@ The first three change no state at all; a patrol does run triage (it may touch t
 | `conversation.input.left` | `anima-quick-toggle` | 51 | The "persona on / persona off" quick toggle at the left of the input box |
 | `conversation.input.overlay` | `anima-trail` | 51 | The input-box light trail (lights up only while the assistant is running) |
 
-All three ids are kept apart from their `dsh-soul` counterparts: `settings.section`'s documentation states that "reusing an existing id replaces that cell",
+All three ids are kept apart from their `某同类人设插件` counterparts: `settings.section`'s documentation states that "reusing an existing id replaces that cell",
 so a collision would displace the other's settings page.
 
 **The settings navigation icon** is implemented by DOM replacement (constant prefixes `data-an-settings-nav` / `data-an-icon-replaced`):
@@ -830,10 +831,10 @@ a **non-loopback origin** is always rejected; a request carrying `Sec-Fetch-Site
 ## Confirmation for destructive actions
 
 `POST /api/anima/config/reset` requires the request body to carry an explicit `{"confirm": true}`; an empty body always yields
-**400 + `code: "confirmation-required"`**, without touching a single field. The "Restore defaults" button in the settings page first shows a confirmation dialog and only carries that field once it is accepted. The semantics match `dsh-checkpoint-rewind`'s fail-closed behaviour:
+**400 + `code: "confirmation-required"`**, without touching a single field. The "Restore defaults" button in the settings page first shows a confirmation dialog and only carries that field once it is accepted. The semantics match `某同生态插件`'s fail-closed behaviour:
 without an unambiguous confirmation, do nothing — and explain what would make the request valid.
 
-A reset **preserves user-created persona presets** — behaviour aligned with `dsh-soul`'s `defaultConfigPreservingPersonas(current)`;
+A reset **preserves user-created persona presets** — behaviour aligned with `某同类人设插件`'s 重置时保留用户自建人设的函数;
 presets are assets the user accumulated one by one, and resetting tone settings should not wipe them out as well.
 
 > This safeguard comes from a real incident: to check whether the routes were registered, each write route was probed with `POST {}`, and

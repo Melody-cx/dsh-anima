@@ -12,13 +12,14 @@
 //
 // 用法：
 //   node scripts/acceptance.mjs                      # 只验静态与单测
-//   node scripts/acceptance.mjs --url http://127.0.0.1:54537
+//   node scripts/acceptance.mjs --url http://127.0.0.1:<PORT>
 //   node scripts/acceptance.mjs --url ... --since 2026-10-20T01:12:20+08:00
 //       加 --url 会额外验运行态（配置、提示词段、钩子活性、记忆字段覆盖）。
 //       --since 是宿主重启时刻；不给就只能落 UNDETERMINED，不会冒充通过。
 //
 // 退出码：0 = 所有「必要条件」都过；1 = 有必要条件没过；2 = 参数错。
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -65,7 +66,11 @@ function runScript(relPath, argv, id, name, kind = 'must') {
   })
   const code = r.status
   const ok = code === 0
-  add(id, name, kind, ok, ok ? `退出码 0` : `退出码 ${code}${r.signal ? ` signal=${r.signal}` : ''}`)
+  // 失败时把 signal 也带上：被信号杀掉时 status 是 null，只写退出码会写成「退出码 null」。
+  let detail = `退出码 ${code}`
+  if (ok) detail = '退出码 0'
+  else if (r.signal) detail = `退出码 ${code} signal=${r.signal}`
+  add(id, name, kind, ok, detail)
   return ok
 }
 
@@ -147,8 +152,12 @@ add('tier-off', "ledgerLevel='off' 时一条都不触发", 'must',
 // 这一项存在的理由：改完源码不等于插件变了。profile 里是真目录副本，
 // 不重跑同步就是「装好了但没通电」，而界面上完全看不出来。
 const srcDir = ROOT
+// 安装副本目录：优先 --installed，其次 DSH_HOME，最后用户主目录下的 .dsh。
+// 这里的兜底原本写死了开发机的用户名，换台机器就会指向一个不存在的目录，
+// 于是「源码与安装副本一致」这一项会在「安装副本不存在」和「真不一致」之间含混。
+const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
 const instDir = args.installed
-  ?? path.join(process.env.USERPROFILE ?? 'C:\\Users\\10933', '.dsh', 'profiles', 'desktop', 'node_modules', 'dsh-anima')
+  ?? path.join(DSH_HOME, 'profiles', 'desktop', 'node_modules', 'dsh-anima')
 
 // 清单必须从源码树自动推导，不能写死。
 // 第一版写死了 15 个文件，而 _sync_install.cjs 实际同步 32 个 —— 中间 17 个文件
@@ -249,9 +258,13 @@ if (!fs.existsSync(instDir)) {
   // 第一版判据只认其中一种，于是把「控件齐全」判成了「缺两个」——判据写死比没写更糟。
   const need = ['quality-enabled', 'quality-ledger', 'quality-strict', 'quality-precheck', 'quality-max']
   const missing = need.filter((s) => !src.includes(s))
+  // 三种缺法要分开说：读不到源码 / 缺控件 / 齐全。挤成一个三元没人看得懂哪一种是哪种。
+  let uiDetail = '五个控件齐全'
+  if (src.length === 0) uiDetail = 'client/index.mjs 读不到'
+  else if (missing.length > 0) uiDetail = `缺 ${missing.join(' / ')}`
   add('client-quality-ui', '设置页质检卡片的五个控件都在源码里', 'must',
     src.length > 0 && missing.length === 0,
-    src.length === 0 ? 'client/index.mjs 读不到' : (missing.length ? `缺 ${missing.join(' / ')}` : '五个控件齐全'))
+    uiDetail)
 
   // 载荷必须带 quality 段：只画控件不提交，就是「能改却存不下」那个老 bug 的形状。
   add('client-quality-payload', '保存载荷里带 quality 段（不是只画了控件）', 'must',
@@ -297,11 +310,12 @@ if (!fs.existsSync(instDir)) {
   for (const key of enKeys) counts.set(key, (counts.get(key) ?? 0) + 1)
   // 只在一边出现的键，计数值是 1 —— 与「同一侧写了两遍」同样是坏形状，都要报出来。
   const badI18n = [...counts].filter(([, n]) => n !== 2).map(([k, n]) => `${k}×${n}`)
+  let i18nDetail = `${counts.size} 个 key 各两份`
+  if (counts.size === 0) i18nDetail = '源码里找不到任何 quality.* 词典条目'
+  else if (badI18n.length > 0) i18nDetail = `不配对：${badI18n.join(', ')}`
   add('client-quality-i18n', '质检文案的每个 key 在 zh/en 两侧各一份', 'must',
     counts.size > 0 && badI18n.length === 0,
-    counts.size === 0
-      ? '源码里找不到任何 quality.* 词典条目'
-      : (badI18n.length ? `不配对：${badI18n.join(', ')}` : `${counts.size} 个 key 各两份`))
+    i18nDetail)
 }
 
 // ==================== 四、运行态（需要 --url） ====================
@@ -395,10 +409,14 @@ const pad = (s, n) => String(s).padEnd(n)
 for (const kind of ['must', 'should', 'report']) {
   const group = results.filter((r) => r.kind === kind)
   if (!group.length) continue
-  const label = kind === 'must' ? '必要条件' : kind === 'should' ? '应当满足' : '观察项'
+  const kindLabel = { must: '必要条件', should: '应当满足', report: '观察项' }
+  const label = kindLabel[kind] ?? '观察项'
   console.log(`\n[${label}]`)
   for (const r of group) {
-    const mark = r.kind === 'report' ? '·' : r.ok === true ? 'ok' : 'FAIL'
+    // 观察项一律打 '·'：它没有通过/失败语义，标成 FAIL 会让人以为要修。
+    let mark = 'FAIL'
+    if (r.kind === 'report') mark = '·'
+    else if (r.ok === true) mark = 'ok'
     console.log(`  ${pad(mark, 4)} ${pad(r.id, 16)} ${r.name}${r.detail ? `  — ${r.detail}` : ''}`)
   }
 }

@@ -187,8 +187,20 @@ function walk(node, out = []) {
 }
 
 const elements = (nodes, type) => nodes.filter((n) => n.kind === 'element' && n.type === type)
-const byClass = (nodes, className) =>
-  nodes.filter((n) => n.kind === 'element' && n.props.className === className)
+// 按「类名里含有这些 token」匹配，不是整串相等。
+// 原来这里是 `n.props.className === className`，只在「一个元素恰好只挂这些类」时成立。
+// 一旦某个节点同时挂了版式工具类（如 'an-kv an-mt10'），精确相等就找不到它了 ——
+// 断言会以「元素不存在」的形式失败，而真正的原因只是类名多了一个 token。
+// 传多词（'an-card an-card-collapsed'）时要求全部命中，所以调用点写法不用改；
+// 也依旧不松：'an-badge' 不会匹配到 'an-badge-ok'（按 token 切，不按子串）。
+const byClass = (nodes, className) => {
+  const want = className.split(/\s+/).filter(Boolean)
+  return nodes.filter((n) => {
+    if (n.kind !== 'element') return false
+    const have = String(n.props.className ?? '').split(/\s+/)
+    return want.every((w) => have.includes(w))
+  })
+}
 const texts = (nodes) => nodes.filter((n) => n.kind === 'text').map((n) => n.value)
 const allText = (nodes) => texts(nodes).join(' ')
 
@@ -791,24 +803,24 @@ await test('客户端 apply() 跑完不抛错，注册到 anima-settings', () =>
   const settings = slotFor('settings.section')
   assert.ok(settings, '没有注册 settings.section')
   assert.equal(settings.config.id, 'anima-settings')
-  assert.equal(settings.config.order, 51, 'order 必须与 dsh-soul 的 50 错开')
+  assert.equal(settings.config.order, 51, 'order 必须与同类插件的 50 错开')
   assert.equal(typeof settings.config.label, 'function')
   // 下面几节仍按单槽位的旧写法读这两个变量，这里回填以免大改既有断言。
   slotRegistration = settings.config
   slotComponent = settings.Component
 })
 
-await test('三个槽位都注册了，且 id 都避开 dsh-soul 占用过的格子', () => {
+await test('三个槽位都注册了，且 id 都避开同类插件占用过的格子', () => {
   const names = slotRegistrations.map((entry) => entry.config.name).sort()
   assert.deepEqual(names, ['conversation.input.left', 'conversation.input.overlay', 'settings.section'])
-  // settings.section 的文档：复用已有 id 即替换那一格 —— 撞上 dsh-soul 会顶掉它。
+  // settings.section 的文档：复用已有 id 即替换那一格 —— 撞上同类插件会顶掉它。
   const ids = new Set(slotRegistrations.map((entry) => entry.config.id))
   assert.deepEqual(
     [...ids].sort(),
     ['anima-quick-toggle', 'anima-settings', 'anima-trail']
   )
   for (const taken of ['soul-settings', 'soul-quick-toggle', 'soul-trail']) {
-    assert.ok(!ids.has(taken), `id 与 dsh-soul 撞车：${taken}`)
+    assert.ok(!ids.has(taken), `id 与同类插件撞车：${taken}`)
   }
 })
 

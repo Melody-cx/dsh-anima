@@ -167,9 +167,22 @@ function makeRunDir() {
   return dir
 }
 
+/** 清理时也要先确认 OUT_PARENT 是普通目录：它是临时目录下的固定名字，
+ *  别人可以先把它做成指向任意位置的符号链接，readdirSync 会跟进去、
+ *  rmSync 就会删到目标目录里。makeRunDir 有这层检查，--clean 以前没有。 */
+function assertRealDir(dir) {
+  const st = fs.lstatSync(dir)
+  if (!st.isDirectory() || st.isSymbolicLink()) {
+    throw new Error(`${dir} 不是普通目录（可能是符号链接），拒绝清理`)
+  }
+}
+
 function removeAllEntries(dir) {
   let entries = []
-  try { entries = fs.readdirSync(dir) } catch (e) {
+  try {
+    assertRealDir(dir)
+    entries = fs.readdirSync(dir)
+  } catch (e) {
     if (e.code === 'ENOENT') return 0
     throw e
   }
@@ -359,9 +372,11 @@ function main() {
     for (const k of SEVERITY_ORDER) {
       for (const c of bySev[k]) {
         const hasLine = c.start_line !== null && c.start_line !== undefined
-        const range = hasLine
-          ? (c.start_line === c.end_line ? `L${c.start_line}` : `L${c.start_line}-${c.end_line}`)
-          : 'L?'
+        // 无行号时给 'L?'：ocr 有些 finding 是文件级的，没有 start_line。
+        let range = 'L?'
+        if (hasLine) {
+          range = c.start_line === c.end_line ? `L${c.start_line}` : `L${c.start_line}-${c.end_line}`
+        }
         console.log(`\n[${k}/${c.category ?? '?'}] ${c.path}:${range}`)
         console.log(String(c.content ?? '').split('\n').map((l) => `  ${l}`).join('\n'))
       }

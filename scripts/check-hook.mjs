@@ -8,7 +8,7 @@
 //   node scripts/check-hook.mjs                  # 自动找最新的会话文件
 //   node scripts/check-hook.mjs <session.v4.jsonl.zstd>
 //   node scripts/check-hook.mjs --since 2026-10-20T01:12:20+08:00
-//   node scripts/check-hook.mjs --url http://127.0.0.1:51590
+//   node scripts/check-hook.mjs --url http://127.0.0.1:PORT
 //       加上 --url 会拿插件自报的 qualityStats 与本脚本从日志重算的结果交叉核对：
 //       长度一致、规则一致，才说明钩子真的读到真实正文并判过，而不是空转。
 //
@@ -22,11 +22,18 @@
 //   INCONSISTENT 计数器与日志对不上 → 计数不可信
 //   UNDETERMINED 上述都不成立 → 这是未测状态，不是通过状态
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import zlib from 'node:zlib'
+import { readSessionEvents } from './zstd-frames.mjs'
 
-const SESSIONS_ROOT = path.join(process.env.USERPROFILE ?? 'C:\\Users\\10933', '.dsh', 'sessions')
-const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd]
+// 会话根目录：优先 DSH_HOME，其次用户主目录下的 .dsh。
+//
+// 曾经这里写的是 `process.env.USERPROFILE ?? 'C:\\Users\\<某个人的名字>'`。
+// 那个兜底把开发机上的用户名固化进了要发布的脚本里：在别人的机器上一旦
+// USERPROFILE 缺失，它会去找一个不存在的目录，然后安静地报「找不到会话文件」——
+// 看起来像「没有会话」，其实是路径错了。改用 os.homedir() 才是真正的兜底。
+const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
+const SESSIONS_ROOT = path.join(DSH_HOME, 'sessions')
 // anima 注入的质检提醒正文都以这个前缀开头（见 lib/injection.mjs 的 qualityReminderText）。
 // 用它区分「质检提醒」和「每晚整理已完成」这类与质检无关的后台通知。
 const QUALITY_MARK = '[dsh-anima 质检]'
@@ -47,35 +54,11 @@ function parseArgs(argv) {
 
 /**
  * 会话文件是「每行一个 zstd 帧」的追加格式。
- * 直接 zstdDecompressSync 整个文件只会解出第一帧，得到一份看起来正常但残缺的事件表 ——
- * 这是踩过的坑，所以这里必须按魔数切帧。
+ * 分帧与解压的实现搬到 scripts/zstd-frames.mjs，供本脚本与 remind-effect / trace-sources 共用
+ * —— 这段逻辑原本三处逐字重复，改一处漏两处时另外两个会安静地产出残缺事件表。
  */
 function readEvents(file) {
-  const raw = fs.readFileSync(file)
-  const starts = []
-  for (let i = 0; i + 4 <= raw.length; i += 1) {
-    if (raw[i] === ZSTD_MAGIC[0] && raw[i + 1] === ZSTD_MAGIC[1]
-      && raw[i + 2] === ZSTD_MAGIC[2] && raw[i + 3] === ZSTD_MAGIC[3]) starts.push(i)
-  }
-  const events = []
-  let failedFrames = 0
-  for (let k = 0; k < starts.length; k += 1) {
-    const begin = starts[k]
-    const end = k + 1 < starts.length ? starts[k + 1] : raw.length
-    let text
-    try {
-      text = zlib.zstdDecompressSync(raw.subarray(begin, end)).toString('utf8')
-    } catch {
-      failedFrames += 1
-      continue
-    }
-    for (const line of text.split('\n')) {
-      const t = line.trim()
-      if (!t) continue
-      try { events.push(JSON.parse(t)) } catch { /* 半行，跳过 */ }
-    }
-  }
-  return { events, frames: starts.length, failedFrames }
+  return readSessionEvents(file)
 }
 
 function findLatestSession() {

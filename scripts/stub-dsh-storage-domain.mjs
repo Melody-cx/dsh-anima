@@ -1,7 +1,7 @@
 // scripts/stub-dsh-storage-domain.mjs — 仅测试用的 @deepseek-ai/dsh-storage-domain 替身
 //
 // 为什么需要它：真实包由宿主体内解析，进程外的测试（smoke-host / verify-core）
-// import 不到。装上 profile 后走的是真实包（与 dsh-checkpoint-rewind 同一条路径）。
+// import 不到。装上 profile 后走的是真实包（与同生态插件同一条路径）。
 //
 // 替身复刻真实包**被本插件用到**的那部分语义：
 //   ① defineDomain(spec) —— 只做名称/版本/表的形状校验，返回 spec 的浅拷贝；

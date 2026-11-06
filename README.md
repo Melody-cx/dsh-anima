@@ -45,9 +45,9 @@ DSH 的**助手人格与外挂记忆层**——一个独立插件，装上即可
 | 长期记忆的「自动写入」 | ❌ 刻意不做（见下） |
 | 「质检通过了」这类结论 | ❌ 刻意不支持（理由见「质检层」一节） |
 
-### 关于与 `dsh-soul` 的关系
+### 关于与 `某同类人设插件` 的关系
 
-上表左侧的能力划分与 `dsh-soul` 0.7.0 的字段集**有交集**，实现上也刻意与它保持一致
+上表左侧的能力划分与 `某同类人设插件` 0.7.0 的字段集**有交集**，实现上也刻意与它保持一致
 （工具确认语义、光轨动效参数、重置保留预设）。但本插件**不依赖它**：
 字段集完整自持，不读它的配置文件，两者可同时安装且标识全部错开。
 这层关系的完整说明见下方「[致谢与差异化声明](#致谢与差异化声明)」。
@@ -125,8 +125,8 @@ DSH 的**助手人格与外挂记忆层**——一个独立插件，装上即可
 
 ## 致谢与差异化声明
 
-本插件的功能集**参考**了 [dsh-soul](https://github.com/Aliuyanfeng/dsh-soul)（MIT）与
-`dsh-checkpoint-rewind` 的设计，并在若干处刻意与它们保持行为一致（存储惰性解析、
+本插件的功能集在设计时参考了同生态里已有的几款人设类插件（均为 MIT 许可），
+并在若干处刻意与它们保持行为一致（存储惰性解析、
 失败关闭的确认语义、重置保留用户预设、光轨动效参数）。
 
 需要明确的是：
@@ -135,27 +135,28 @@ DSH 的**助手人格与外挂记忆层**——一个独立插件，装上即可
 - 两处**动效参数刻意取同值**（8 层错位描边、虚线段长 12 / 步进 2.2 / 圆角 22 等），
   理由是避免同一台机器上出现两套观感。这类数值属于思想与参数，不受著作权保护；
   记在这里是为了不让读者误以为拷贝。
-- **导航图标刻意画得不同形**：dsh-soul 用「光轨弧 + 火花」，本插件用「人像（头+肩）+ 火花」，
+- **导航图标刻意画得不同形**：同生态的人设插件用「光轨弧 + 火花」，本插件用「人像（头+肩）+ 火花」，
   单色 `currentColor`，viewBox 也另行收紧。
 - **各类标识全部错开**，避免共存时互相顶替或注册失败：
 
-  | 类别 | dsh-soul | 本插件 |
+  | 类别 | 同类插件的取值 | 本插件 |
   |---|---|---|
-  | 工具名 | `set_persona` | `set_assistant_persona` |
-  | 设置页 id | `soul-settings` | `anima-settings` |
-  | 光轨槽位 id | `soul-trail` | `anima-trail` |
-  | 开关槽位 id | `soul-quick-toggle` | `anima-quick-toggle` |
-  | 提示词 section | `soul:persona` | `anima:identity` / `:memory` / `:pending` |
+  | 工具名 | 它们各自的同名工具 | `set_assistant_persona` |
+  | 设置页 id | 各自的页 id | `anima-settings` |
+  | 光轨槽位 id | 各自的槽位 id | `anima-trail` |
+  | 开关槽位 id | 各自的槽位 id | `anima-quick-toggle` |
+  | 提示词 section | 它注册的那条 context | `anima:identity` / `:memory` / `:pending` |
   | 存储域 | —（自有文件） | `anima` |
-  | 注入来源 kind | `plugin:dsh-soul` | `plugin:dsh-anima` |
+  | 注入来源 kind | 各自的前缀 | `plugin:dsh-anima` |
 
 工具名错开不只是礼貌：`dsh-tools` 的 `register()` 遇同层重名**直接抛错**
 （`lib/index.js` 的 `NamedEntries` 冲突工厂），两者共存时必有一方注册失败、
 并被 `.catch` 吞成一行 warn —— 那是发布级的静默故障。
 
-本节只列了「功能参考」层面的两个项目。`docs/peers/` 下还保存了对另外十余个同类插件的
-**只读调研记录**（机制、行号、踩坑原文），全部未复制代码。那些项目的仓库地址、SPDX 许可
-与取数日期统一记在 [`docs/THIRD-PARTY-NOTES.md`](docs/THIRD-PARTY-NOTES.md)。
+本节只写了「功能参考」层面的概括，不再点名具体项目 —— 发布包里不含任何第三方项目的名字。
+`docs/peers/` 下保存了对十余个同类插件的**只读调研记录**（机制、行号、踩坑原文），全部未复制代码；
+那些项目的仓库地址、SPDX 许可与取数日期统一记在 `docs/THIRD-PARTY-NOTES.md`。
+`docs/` 不在 `package.json` 的 `files` 里，**不进发布包**，只随仓库存在。
 
 
 
@@ -460,7 +461,7 @@ URL 内嵌凭据等 11 类模式。
 本插件尚未发布到 npm，从仓库直接装：
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
+dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 ```
 
 或者手工改 profile 的 `package.json`：
@@ -468,13 +469,13 @@ dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v1.0.0"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.0.0"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v1.0.0` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
+`#v2.0.0` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
 否则上游的任何改动都会在下次安装时直接进入你的 profile。git 源下载的是**整个仓库 tarball**
 （本仓库很小），首次安装可能比 npm 源慢一些，超时的话重试一次即可。
 
@@ -616,13 +617,14 @@ dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
 
 ### 不做任何迁移
 
-本插件**不读任何其它插件或自己旧版本的配置**。它是 1.0.0，此前没有发布过任何版本 ——
-没有「老用户的介质」这种东西需要兼容，所以代码里既没有一次性迁移，也没有存储格式回退。
+本插件**不读任何其它插件或自己旧版本的配置**。它发布过 1.0.0，但 1.0.0 与 2.0.0 的存储格式完全相同
+（`DOMAIN_VERSION` 都是 1，config / memories / meta / audit 四张表的 spec 逐字一致）——
+没有「老用户的介质」需要兼容，所以代码里既没有一次性迁移，也没有存储格式回退。
 这两块曾存在于开发期，都已删除；留着它们的唯一作用是让后人以为有一批需要照顾的存量用户。
 
 将来真要升存储格式：只改 `lib/store.mjs` 的 `DOMAIN_VERSION`，并**先想清楚老用户的介质怎么办** ——
 那个决定不该在发布之后临时补，因为补的时候介质已经在用户机器上了。范式可参考同生态的
-`dsh-checkpoint-rewind`（双 spec 串行回退）。
+`某同生态插件`（双 spec 串行回退）。
 
 
 ### 十二个字段都是自由文本
@@ -673,7 +675,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
 
 配置落盘：**只用** `storageDomain`（域 `anima` —— 注意是下划线，宿主的域名校验只接受 `^[a-z][a-z0-9_]*$`，连字符会被拒）。
 
-**惰性解析**（与 `dsh-checkpoint-rewind` 的做法一致）：不在 `apply` 阶段解析服务，首次真正使用时才 `ctx.get('storageDomain')`。
+**惰性解析**（与 `某同生态插件` 的做法一致）：不在 `apply` 阶段解析服务，首次真正使用时才 `ctx.get('storageDomain')`。
 `dsh-storage-domain` 的 `apply` 体是 `ctx.inject(backendServices, …)` + 回调里 `provide('storageDomain', …)`，
 而 `backendServices` 是 `storage.backend.json`（由 `storage-json` 提供）。本插件若比 `storage-json` 先装载，
 `apply` 阶段那一次 `ctx.get()` 必然拿到 `undefined` —— 这正是 2026-10-10 冷启动时存储后端无声退化的真因：
@@ -686,7 +688,8 @@ dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
 那一刻回调触发，本仓用真 cordis 探针实证过），期间五个 section 返回空串 —— 宁可不注入，也不冒充默认档。
 
 **不做旧数据救援**：`storageDomain` 何时可用取决于装载顺序，同一个人可能早期把配置写进过别的落点。
-但本插件是 1.0.0，没有「早期版本的用户」—— 所以打开域时不做任何导入或归档，只打开自己的域。
+而 1.0.0 与 2.0.0 的存储格式相同（`DOMAIN_VERSION` 都是 1，四张表一致），没有需要救援的旧介质 ——
+所以打开域时不做任何导入或归档，只打开自己的域。
 若将来真需要迁移，唯一安全的形状是：**仅在新域 config 记录不存在时**动手，且自己的任何失败都只记 warn，
 绝不外抛（这段代码在打开域的 try 块里，外抛会被包成新域的 `open-failed`，让一个本该正常的插件停摆）。
 
@@ -698,17 +701,16 @@ dsh plugin add github:Melody-cx/dsh-anima#v1.0.0
 
 **单一格式戳，无回退**：`storage-json` 的 single 布局在打开时**硬比对**版本戳 ——
 `unit.version !== descriptor.version` 直接抛 `version-mismatch`，没有任何自动迁移。本插件的域版本
-**恒为 1**（`lib/store.mjs` 的 `DOMAIN_VERSION`），只声明一个 spec，不做串行回退：1.0.0 之前没有发布过，
-不存在「老用户的 v2/v3 介质」这种东西需要读。
+**恒为 1**（`lib/store.mjs` 的 `DOMAIN_VERSION`），只声明一个 spec，不做串行回退：1.0.0 与 2.0.0 的格式戳相同，不存在「老用户的 v2/v3 介质」这种东西需要读。
 
 开发期曾有过兼容回退（按 `[v3, v2, v1]` 串行 `open()`，只对 `version-mismatch` 继续试），随未发布的
 v2/v3 格式一起删除。那段代码的教训保留在这里，因为将来升格式时用得上：**`compatibleVersions` 声明了
 等于没写** —— 它只被 per-record 布局的 `acceptedStamps()` 读，single 布局的 `parse()` 根本不看。
-真要做多版本兼容，只能像 `dsh-checkpoint-rewind` 那样声明**双 spec**（主 spec + 容错 spec），
+真要做多版本兼容，只能像 `某同生态插件` 那样声明**双 spec**（主 spec + 容错 spec），
 且兼容 spec 必须声明**全部四张表** —— `DomainImpl.table()` 对未声明表直接抛错，少一张就会在下一次
 `table('audit')` 时炸。
 
-**两套编号，别混**：插件自己的版本是 `package.json` 的 semver（`1.0.0`，设置页右上角徽标那个），
+**两套编号，别混**：插件自己的版本是 `package.json` 的 semver（`2.0.0`，设置页右上角徽标那个），
 存储格式戳是个位数（当前是 1），两者互不相干。界面上凡出现格式戳的地方一律写「存储格式 vN」，
 凡出现插件版本的地方一律带小数点 —— 混着叫「本版 v3」时用户没法判断哪个数字在说他装的插件旧。
 `lib/config.mjs` 里那个零引用的 `CONFIG_VERSION = 3` 已删除，就是为了不再制造第二个「v3」。
@@ -755,7 +757,7 @@ v2/v3 格式一起删除。那段代码的教训保留在这里，因为将来�
 | `conversation.input.left` | `anima-quick-toggle` | 51 | 输入框左侧的「人设已开 / 人设已关」快捷开关 |
 | `conversation.input.overlay` | `anima-trail` | 51 | 输入框光轨（仅助手运行时亮起） |
 
-三个 id 全部与 `dsh-soul` 的对应项错开：`settings.section` 的文档写明「复用已有 id 即替换那一格」，
+三个 id 全部与 `某同类人设插件` 的对应项错开：`settings.section` 的文档写明「复用已有 id 即替换那一格」，
 撞上就会把对方的设置页顶掉。
 
 **设置导航图标**用 DOM 替换实现（常量前缀 `data-an-settings-nav` / `data-an-icon-replaced`）：
@@ -858,10 +860,10 @@ authentication, or origin policy of its own*），且默认配置可能绑在 `0
 
 `POST /api/anima/config/reset` 要求请求体里显式带 `{"confirm": true}`，空 body 一律
 **400 + `code: "confirmation-required"`**，一个字段都不动。设置页的「恢复默认」按钮会先弹一次
-确认框，通过后才带该字段。语义与 `dsh-checkpoint-rewind` 的失败关闭（fail closed）一致：
+确认框，通过后才带该字段。语义与 `某同生态插件` 的失败关闭（fail closed）一致：
 拿不到明确确认就什么都不做，并说明怎么做才有效。
 
-重置**保留用户自建的人设预设**——行为与 `dsh-soul` 的 `defaultConfigPreservingPersonas(current)` 对齐，
+重置**保留用户自建的人设预设**——行为与 `某同类人设插件` 的 重置时保留用户自建人设的函数 对齐，
 预设是用户一条条攒出来的资产，重置语气设置不该连它一起清掉。
 
 > 这条护栏来自一次真实事故：为确认路由是否注册，对写路由逐一 `POST {}` 探活，

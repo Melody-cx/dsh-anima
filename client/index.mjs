@@ -3,7 +3,7 @@
 // 在设置页新增一个栏目「灵台」（独立栏目，不依赖任何其它插件）：
 //
 //   1. 人设预设 —— 内置 6 套 + 自建；套用只覆盖预设声明的字段
-//   2. 助手身份 —— AI 自己的名字与角色设定（dsh-soul 的 nickname 是「用户的名字」，
+//   2. 助手身份 —— AI 自己的名字与角色设定（某同类人设插件的 nickname 是「用户的名字」，
 //      不是 AI 的名字，这是本插件补上的缺口）
 //   3. 用户背景 —— 称呼 / 职业 / 简介，独立成段以免与助手身份混读
 //   4. 回复风格与特质 —— 风格 / 标题列表 / 表情 / 表格 / 长度 / 语言 / 补充指令
@@ -15,7 +15,7 @@
 // 注意：React 17+ 的 jsx-runtime 里 children 必须放在 props.children，
 // 不能当第三个参数传（第三个参数是 key）。
 //
-// 数据通道与 dsh-soul 保持同一形态：自建 fetch 打到本插件自己的 HTTP 路由
+// 数据通道与某同类人设插件保持同一形态：自建 fetch 打到本插件自己的 HTTP 路由
 // （第三方客户端插件读不到宿主的 host.call，见 dsh-client-runtime 只 seed 平台模块）。
 
 window.__ModuleLoader__.load({
@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '1.0.0'
+    const VERSION = '2.0.0'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -200,10 +200,10 @@ window.__ModuleLoader__.load({
       customInstructions: ''
     })
 
-    // ── 光轨（对照 dsh-soul 的 trail 四项）──────────────────────────────
+    // ── 光轨（对照某同类人设插件的 trail 四项）──────────────────────────────
     //
-    // 参数与 dsh-soul 保持一致，这样两者的观感不会出现「同一台机器上两套动效」；
-    // 但实现完全自写：dsh-soul 用 8 层错位描边动画，这里同样画 8 层 —— 层数、
+    // 参数与某同类人设插件保持一致，这样两者的观感不会出现「同一台机器上两套动效」；
+    // 但实现完全自写：某同类人设插件用 8 层错位描边动画，这里同样画 8 层 —— 层数、
     // 虚线段长与步进是「看起来像光线在跑」的最小充分条件，不是可随意取的值。
     const TRAIL_DASH = 12
     const TRAIL_LAYERS = 8
@@ -281,7 +281,7 @@ window.__ModuleLoader__.load({
     })
 
     /**
-     * 工具确认门槛 + 光轨四项（对照 dsh-soul 的 requireToolConfirmation / trail*）。
+     * 工具确认门槛 + 光轨四项（对照某同类人设插件的 requireToolConfirmation / trail*）。
      *
      * 与 memoryDefaults 一样是「夹带在 config 里的子表单」：它们不参与工作区覆盖
      * （一个安全开关、一组界面偏好，都不该因为换个工作区而悄悄换掉），但必须走
@@ -315,7 +315,7 @@ window.__ModuleLoader__.load({
     })
 
     // -------------------------------------------------------------------------
-    // 轻量快照 store（dsh-soul 同款 —— 第三方插件不能用 client-runtime 的 store）
+    // 轻量快照 store（某同类人设插件同款 —— 第三方插件不能用 client-runtime 的 store）
     // -------------------------------------------------------------------------
 
     const createSnapshotStore = (init) => {
@@ -939,7 +939,39 @@ window.__ModuleLoader__.load({
       // ── 待确认提议条 ──
       '.an-proposal{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-label-warning,#d48806);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6}',
       '.an-proposal-title{font-weight:600;color:var(--dsw-alias-label-warning,#d48806)}',
-      '.an-proposal-detail{margin-top:6px;font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}'
+      '.an-proposal-detail{margin-top:6px;font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}',
+      // ── 版式工具类 ──
+      // 这些值是「排版常量」，不随状态变化，所以按 ocr 的 ts_js_tsx_jsx.md
+      // 「Inline Styles: Avoid using inline `style` attributes, except for dynamic styles」
+      // 搬成类；真正动态的那一处（会话色块的 background 取自变量）仍留 inline。
+      // 命名沿用已有的 an- 前缀 + 语义缩写，避免按数值起名后就无法再改数值。
+      '.an-mt4{margin-top:4px}',
+      '.an-mt6{margin-top:6px}',
+      '.an-mt8{margin-top:8px}',
+      '.an-mt10{margin-top:10px}',
+      '.an-mt12{margin-top:12px}',
+      '.an-mt14{margin-top:14px}',
+      '.an-mt16{margin-top:16px}',
+      '.an-mt20{margin-top:20px}',
+      '.an-mr12{margin-right:12px}',
+      '.an-minw0{min-width:0}',
+      '.an-gap16{display:flex;gap:16px}',
+      '.an-gap16wrap{display:flex;flex-wrap:wrap;gap:16px}',
+      '.an-gap12wrap{display:flex;flex-wrap:wrap;gap:12px}',
+      '.an-rowcenter{display:flex;gap:8px;align-items:center}',
+      '.an-rowend{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}',
+      '.an-rowgap8mt10{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}',
+      '.an-badgewrap{display:flex;gap:6px;flex-wrap:wrap}',
+      '.an-wrap{display:flex;flex-wrap:wrap}',
+      // 响应式两列/三列：flex-basis 固定，窄屏时自然折行，不需要媒体查询。
+      '.an-flex240{flex:1 1 240px}',
+      '.an-flex240an{flex:1 1 240px;min-width:0}',
+      '.an-flex200{flex:1 1 200px}',
+      '.an-flex140{flex:1 1 140px}',
+      '.an-flex260{flex:2 1 260px}',
+      '.an-flexfill{flex:1 1 0}',
+      '.an-page-title{font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.an-list-indent{margin:4px 0 0;padding-left:18px}'
     ].join('')
 
     // -------------------------------------------------------------------------
@@ -957,7 +989,7 @@ window.__ModuleLoader__.load({
       'identity.nameHint': '这是 AI 给自己的名字，不是你对它的称呼（那个在下一张卡里）。留空就不告诉它自己叫什么。',
       // 不给示例按钮，就在这里说清楚格式 —— 见 lib/wording.mjs 的 FIELD_EXAMPLES
       // 注释：名字被一键填进来太容易被原样留下，然后长期叫错。
-      'identity.namePlaceholder': '例如「小沃」「阿榆」——两三个字，别用职位或昵称',
+      'identity.namePlaceholder': '例如「小林」「阿哲」——两三个字，别用职位或昵称',
       'identity.role': '角色设定',
       'identity.roleHint': '例如「资深架构师，先给结论再解释权衡」。上限 800 字。',
       'identity.enabled': '把助手身份告诉 AI',
@@ -2068,25 +2100,33 @@ window.__ModuleLoader__.load({
       // 折叠态、展开的预览一起丢掉，用户切个分区回来发现刚敲的字没了。
       // 用 CSS 藏则整棵子树还在，只是看不见 —— 代价是首屏 DOM 不变小。
       const hidden = props.hidden === true
+      // 折叠按钮的四个取值先算出来再拼元素：原来是 `id ? e(...) : null` 里面又套了
+      // 两个三元（标题、aria-expanded），规则明确禁止嵌套三元，读起来也确实费劲。
+      const toggleLabel = collapsed ? t('card.expand') : t('card.collapse')
+      const ariaExpanded = collapsed ? 'false' : 'true'
+      let toggle = null
+      if (id) {
+        toggle = e('button', {
+          type: 'button',
+          className: 'an-card-toggle',
+          'aria-expanded': ariaExpanded,
+          title: toggleLabel,
+          onClick: () => { if (typeof props.onToggle === 'function') props.onToggle(id) }
+        }, toggleLabel)
+      }
       return e('section', {
         className: `an-card${collapsed ? ' an-card-collapsed' : ''}`,
         'data-an-card': id || undefined,
         style: hidden ? { display: 'none' } : undefined
       },
         e('div', { className: 'an-card-head' },
-          e('div', { style: { minWidth: 0 } },
+          e('div', { className: 'an-minw0' },
             e('h3', { className: 'an-card-title' }, props.title),
             props.desc ? e('p', { className: 'an-card-desc' }, props.desc) : null
           ),
           e('div', { className: 'an-card-aside' },
             props.aside ?? null,
-            id ? e('button', {
-              type: 'button',
-              className: 'an-card-toggle',
-              'aria-expanded': collapsed ? 'false' : 'true',
-              title: collapsed ? t('card.expand') : t('card.collapse'),
-              onClick: () => { if (typeof props.onToggle === 'function') props.onToggle(id) }
-            }, collapsed ? t('card.expand') : t('card.collapse')) : null
+            toggle
           )
         ),
         collapsed ? null : props.children
@@ -2115,7 +2155,7 @@ window.__ModuleLoader__.load({
     // 每条只露出一小段虚线（stroke-dasharray "12 88"）并按层号错开相位，
     // 动画让虚线段绕周长跑一圈 —— 叠起来就是「一圈光在环绕」。
     //
-    // 三个必须自守的边界（都是 dsh-soul 踩过并写进注释的坑）：
+    // 三个必须自守的边界（都是某同类人设插件踩过并写进注释的坑）：
     //   ① 尺寸自反馈：SVG 挂进卡片后若参与布局，宿主会变大 → ResizeObserver 回调
     //      → 再变大。故 SVG 自身 pointer-events/contain 全关，且尺寸超上限就自毁。
     //   ② 样式被覆盖：第三方 CSS 若把 position 改掉，光轨会跑到整个页面上去。
@@ -2481,8 +2521,22 @@ window.__ModuleLoader__.load({
       // 都变成一个四行表单，扫一遍库变成苦差事。
       const editing = props.metaEditing === true
       const draft = props.metaDraft ?? {}
+      // 已采纳的条目才给「改元数据」按钮：待审的还没决定要不要，先改分类是本末倒置。
+      // onClick 与文案在元素树外算好 —— 它们若留在 e(...) 参数里就会落进外层三元的
+      // consequent，构成嵌套三元（规则禁止）。
+      const metaLabel = editing ? t('mem.editMetaHide') : t('mem.editMeta')
+      const metaOnClick = editing ? props.onCancelMeta : () => props.onStartMeta(record)
+      let metaEditButton = null
+      if (props.status === 'adopted') {
+        metaEditButton = e('button', {
+          type: 'button',
+          className: 'an-btn an-btn-sm',
+          disabled: busy,
+          onClick: metaOnClick
+        }, metaLabel)
+      }
       const form = editing
-        ? e('div', { className: 'an-field', style: { marginTop: 10 } },
+        ? e('div', { className: 'an-field an-mt10' },
             e('label', null, t('mem.type')),
             e('select', {
               className: 'an-select',
@@ -2572,14 +2626,8 @@ window.__ModuleLoader__.load({
               }, t('mem.discard'))
             : null,
           // 元数据只对已采纳的条目开：待审的还没决定要不要，先改分类是本末倒置。
-          props.status === 'adopted'
-            ? e('button', {
-                type: 'button',
-                className: 'an-btn an-btn-sm',
-                disabled: busy,
-                onClick: editing ? props.onCancelMeta : () => props.onStartMeta(record)
-              }, editing ? t('mem.editMetaHide') : t('mem.editMeta'))
-            : null,
+          // 编辑态的按钮文案与回调先算好，避免在元素树里套三元（规则禁止）。
+          metaEditButton,
           e('button', {
             type: 'button',
             className: 'an-btn an-btn-sm an-btn-danger',
@@ -2647,7 +2695,48 @@ window.__ModuleLoader__.load({
       // 客户端不重新实现一遍判据，免得两边哪天算出不同的数。
       const decayedCount = included.filter((d) => d.decayed === true).length
 
-      return e('div', { className: 'an-field', style: { marginTop: 16 } },
+      // 三行「补充用量」各自独立，先收集再决定画不画整块：
+      // 直接在元素树里写 `cond ? [...] : []` 会落进外层三元的 consequent（嵌套三元，规则禁止）。
+      const usageRows = []
+      if (usedBytes > 0) {
+        usageRows.push(e('dt', { key: 'bytes-k' }, t('inj.bytes')), e('dd', { key: 'bytes-v' }, String(usedBytes)))
+      }
+      if (limitKey) {
+        usageRows.push(e('dt', { key: 'lim-k' }, t('inj.limitedBy')), e('dd', { key: 'lim-v' }, t(limitKey)))
+      }
+      if (omitted > 0) {
+        usageRows.push(e('dt', { key: 'omit-k' }, t('inj.omitted')), e('dd', { key: 'omit-v' }, String(omitted)))
+      }
+
+      // 展开后的决策列表：没有决策时要说「一条都没有」，不能画成空白。
+      let decisionList = null
+      if (open) {
+        if (decisions.length === 0) {
+          decisionList = e('div', { className: 'an-empty' }, t('inj.empty'))
+        } else {
+          decisionList = e('div', { className: 'an-list' },
+            // 已注入的排前面：用户最常问的是「模型现在到底知道什么」
+            [...included, ...excluded].map((decision) => e('div', {
+              key: decision.id,
+              className: 'an-item'
+            },
+              e('div', { className: 'an-item-main' },
+                e('div', { className: 'an-item-text' }, decision.text),
+                e('div', { className: 'an-item-meta' },
+                  e('span', {
+                    className: decision.included ? 'an-badge an-badge-ok' : 'an-badge'
+                  }, decision.included ? t('inj.included') : t('inj.excluded')),
+                  // reasonText 由宿主给（lib/memory.mjs 的 INJECTION_REASON_TEXT），
+                  // 客户端不重写一份翻译，否则两处会漂移。
+                  e('span', null, decision.reasonText ?? decision.reason)
+                )
+              )
+            ))
+          )
+        }
+      }
+
+      return e('div', { className: 'an-field an-mt16' },
         e('div', { className: 'an-row-between' },
           e('div', { className: 'an-card-title' }, t('inj.title')),
           e('button', {
@@ -2665,7 +2754,7 @@ window.__ModuleLoader__.load({
         // 预算用量常显，不必展开 —— 用户最常问的是「离上限还有多远」，
         // 而展开是为了看**每一条**为什么没进去。两件事的粒度不同。
         bars.length > 0
-          ? e('div', { className: 'an-kv', style: { marginTop: 10 } },
+          ? e('div', { className: 'an-kv an-mt10' },
               bars.map(([labelKey, used, max]) => [
                 e('dt', { key: `${labelKey}-k` }, t(labelKey)),
                 e('dd', { key: `${labelKey}-v` }, `${used} / ${max}`)
@@ -2674,7 +2763,7 @@ window.__ModuleLoader__.load({
           : null,
 
         decayedCount > 0
-          ? e('div', { className: 'an-kv', style: { marginTop: 10 } },
+          ? e('div', { className: 'an-kv an-mt10' },
               e('dt', null, t('inj.decayed')),
               e('dd', null, String(decayedCount))
             )
@@ -2684,44 +2773,10 @@ window.__ModuleLoader__.load({
         // 「4000 字」看着很宽裕，中文实际能到 12000 字节；而「只带了 3 条」
         // 到底该删条目还是调预算，取决于卡在哪一闸。
         usedBytes > 0 || limitKey || omitted > 0
-          ? e('div', { className: 'an-kv', style: { marginTop: 10 } },
-              usedBytes > 0
-                ? [e('dt', { key: 'bytes-k' }, t('inj.bytes')), e('dd', { key: 'bytes-v' }, String(usedBytes))]
-                : [],
-              limitKey
-                ? [e('dt', { key: 'lim-k' }, t('inj.limitedBy')), e('dd', { key: 'lim-v' }, t(limitKey))]
-                : [],
-              omitted > 0
-                ? [e('dt', { key: 'omit-k' }, t('inj.omitted')), e('dd', { key: 'omit-v' }, String(omitted))]
-                : []
-            )
+          ? e('div', { className: 'an-kv an-mt10' }, usageRows)
           : null,
 
-        open
-          ? e('div', null,
-              decisions.length === 0
-                ? e('div', { className: 'an-empty' }, t('inj.empty'))
-                : e('div', { className: 'an-list' },
-                    // 已注入的排前面：用户最常问的是「模型现在到底知道什么」
-                    [...included, ...excluded].map((decision) => e('div', {
-                      key: decision.id,
-                      className: 'an-item'
-                    },
-                      e('div', { className: 'an-item-main' },
-                        e('div', { className: 'an-item-text' }, decision.text),
-                        e('div', { className: 'an-item-meta' },
-                          e('span', {
-                            className: decision.included ? 'an-badge an-badge-ok' : 'an-badge'
-                          }, decision.included ? t('inj.included') : t('inj.excluded')),
-                          // reasonText 由宿主给（lib/memory.mjs 的 INJECTION_REASON_TEXT），
-                          // 客户端不重写一份翻译，否则两处会漂移。
-                          e('span', null, decision.reasonText ?? decision.reason)
-                        )
-                      )
-                    ))
-                  )
-            )
-          : null
+        decisionList
       )
     }
 
@@ -2767,6 +2822,33 @@ window.__ModuleLoader__.load({
       const items = Array.isArray(meta.flaggedItems) ? meta.flaggedItems : []
       const dropped = Number(meta.flaggedDropped) || 0
 
+      // 明细块与「还有 n 条没列出」提示。两者都只在有内容时出现，
+      // 但判据不同（items 有 vs dropped > 0），先在元素树外算好再拼。
+      const droppedHint = dropped > 0
+        ? e('div', { className: 'an-hintline' }, t('patrol.moreDropped').replace('{n}', String(dropped)))
+        : null
+      let details = null
+      if (items.length > 0) {
+        details = e('div', { className: 'an-mt4' },
+          e('div', { className: 'an-note' }, t('patrol.details')),
+          e('div', { className: 'an-list an-mt4' },
+            items.map((item) => e('div', { key: item.id, className: 'an-item' },
+              e('div', { className: 'an-item-main' },
+                e('div', { className: 'an-item-text' }, item.detail || item.id),
+                e('div', { className: 'an-item-meta' },
+                  // 证据是「凭什么说它有问题」的唯一凭据。当初没记（旧记录没有这一栏）
+                  // 就如实说没记，不能画一个空徽章冒充「无可奉告」。
+                  e('span', null, item.evidence || t('patrol.detailNoEvidence')),
+                  ' ',
+                  e('span', { className: 'an-badge' }, `/anima mark ${item.id} state=contradicted`)
+                )
+              )
+            ))
+          ),
+          droppedHint
+        )
+      }
+
       return e('div', null,
         e('div', { className: 'an-hintline' },
           e('span', { className: 'an-badge' }, `${t('patrol.last')} ${shortTime(meta.at)}`),
@@ -2775,28 +2857,7 @@ window.__ModuleLoader__.load({
           ' ',
           e('span', null, bits.join('｜'))
         ),
-        items.length === 0
-          ? null
-          : e('div', { style: { marginTop: 4 } },
-              e('div', { className: 'an-note' }, t('patrol.details')),
-              e('div', { className: 'an-list', style: { marginTop: 4 } },
-                items.map((item) => e('div', { key: item.id, className: 'an-item' },
-                  e('div', { className: 'an-item-main' },
-                    e('div', { className: 'an-item-text' }, item.detail || item.id),
-                    e('div', { className: 'an-item-meta' },
-                      // 证据是「凭什么说它有问题」的唯一凭据。当初没记（旧记录没有这一栏）
-                      // 就如实说没记，不能画一个空徽章冒充「无可奉告」。
-                      e('span', null, item.evidence || t('patrol.detailNoEvidence')),
-                      ' ',
-                      e('span', { className: 'an-badge' }, `/anima mark ${item.id} state=contradicted`)
-                    )
-                  )
-                ))
-              ),
-              dropped > 0
-                ? e('div', { className: 'an-hintline' }, t('patrol.moreDropped').replace('{n}', String(dropped)))
-                : null
-            )
+        details
       )
     }
 
@@ -2823,7 +2884,75 @@ window.__ModuleLoader__.load({
       const checked = result?.checked
       const running = result?.running === true || busy
 
-      return e('div', { style: { marginTop: 16 } },
+      // 没查过 vs 查了没事：前者一个字都不说（result 为 null 时整块不画）。
+      // 三种结果的画法各不相同，先在元素树外算好 —— 原来全塞在 e(...) 实参里，
+      // 构成了外层三元的嵌套（规则禁止），而且缩进一深就看不出哪一层是哪个条件。
+      let body = null
+      if (result !== null) {
+        let cleanNote = null
+        if (flagged.length === 0) {
+          cleanNote = e('div', { className: 'an-note' }, t('checkup.clean'))
+        }
+        let flaggedList = null
+        if (flagged.length > 0) {
+          flaggedList = e('div', { className: 'an-list an-mt8' },
+            flagged.map((finding) => {
+              const suggestion = finding.suggestion ?? null
+              const canApply = Boolean(suggestion && suggestion.state)
+              const commandLine = suggestion?.command
+                ? e('div', { className: 'an-item-meta' },
+                    e('span', null, `${t('checkup.command')}：${suggestion.command}`)
+                  )
+                : null
+              let applyButton = null
+              if (canApply) {
+                applyButton = e('button', {
+                  type: 'button',
+                  className: 'an-btn an-btn-sm',
+                  disabled: applyBusy === true,
+                  onClick: () => onApply(finding)
+                }, t('checkup.apply'))
+              }
+              return e('div', { key: finding.id, className: 'an-item' },
+                e('div', { className: 'an-item-main' },
+                  e('div', { className: 'an-item-text' }, finding.text),
+                  e('div', { className: 'an-item-meta' },
+                    (finding.findings ?? []).map((f, index) =>
+                      e('span', { key: index, className: 'an-badge' },
+                        `${t(CHECKUP_KIND_KEY[f.kind] ?? 'checkup.kindOther')}｜${f.detail}`
+                      )
+                    )
+                  ),
+                  // 证据单独一行：这是「凭什么说它有问题」的唯一凭据，
+                  // 混在徽章里会被当成标签，而它其实是可复查的断言。
+                  e('div', { className: 'an-item-meta' },
+                    (finding.findings ?? []).map((f, index) =>
+                      e('span', { key: `e-${index}` }, f.evidence)
+                    )
+                  ),
+                  e('div', { className: 'an-item-meta' },
+                    e('span', null, `${t('checkup.suggest')}：${suggestion?.state ? suggestion.state : t('checkup.suggestNone')}`)
+                  ),
+                  commandLine
+                ),
+                e('div', { className: 'an-item-actions' }, applyButton)
+              )
+            })
+          )
+        }
+        body = e('div', { className: 'an-mt10' },
+          e('div', { className: 'an-note' },
+            t('checkup.summary').replace('{checked}', String(checked ?? 0)).replace('{flagged}', String(flagged.length))
+          ),
+          cleanNote,
+          flaggedList,
+          // 结果是快照，不是实时状态。不加这句，用户会拿十分钟前的结论
+          // 去判断刚改过的记忆。
+          e('div', { className: 'an-hintline' }, t('checkup.stale'))
+        )
+      }
+
+      return e('div', { className: 'an-mt16' },
         e('div', { className: 'an-row-between' },
           e('div', { className: 'an-card-title' }, t('checkup.run')),
           e('button', {
@@ -2834,66 +2963,7 @@ window.__ModuleLoader__.load({
           }, running ? t('checkup.running') : t('checkup.run'))
         ),
         e(Hint, null, t('checkup.note')),
-
-        // 没查过 vs 查了没事：前者一个字都不说。
-        result === null
-          ? null
-          : e('div', { style: { marginTop: 10 } },
-              e('div', { className: 'an-note' },
-                t('checkup.summary').replace('{checked}', String(checked ?? 0)).replace('{flagged}', String(flagged.length))
-              ),
-              flagged.length === 0
-                ? e('div', { className: 'an-note' }, t('checkup.clean'))
-                : null,
-              flagged.length > 0
-                ? e('div', { className: 'an-list', style: { marginTop: 8 } },
-                    flagged.map((finding) => {
-                      const suggestion = finding.suggestion ?? null
-                      const canApply = Boolean(suggestion && suggestion.state)
-                      return e('div', { key: finding.id, className: 'an-item' },
-                        e('div', { className: 'an-item-main' },
-                          e('div', { className: 'an-item-text' }, finding.text),
-                          e('div', { className: 'an-item-meta' },
-                            (finding.findings ?? []).map((f, index) =>
-                              e('span', { key: index, className: 'an-badge' },
-                                `${t(CHECKUP_KIND_KEY[f.kind] ?? 'checkup.kindOther')}｜${f.detail}`
-                              )
-                            )
-                          ),
-                          // 证据单独一行：这是「凭什么说它有问题」的唯一凭据，
-                          // 混在徽章里会被当成标签，而它其实是可复查的断言。
-                          e('div', { className: 'an-item-meta' },
-                            (finding.findings ?? []).map((f, index) =>
-                              e('span', { key: `e-${index}` }, f.evidence)
-                            )
-                          ),
-                          e('div', { className: 'an-item-meta' },
-                            e('span', null, `${t('checkup.suggest')}：${suggestion?.state ? suggestion.state : t('checkup.suggestNone')}`)
-                          ),
-                          suggestion?.command
-                            ? e('div', { className: 'an-item-meta' },
-                                e('span', null, `${t('checkup.command')}：${suggestion.command}`)
-                              )
-                            : null
-                        ),
-                        e('div', { className: 'an-item-actions' },
-                          canApply
-                            ? e('button', {
-                                type: 'button',
-                                className: 'an-btn an-btn-sm',
-                                disabled: applyBusy === true,
-                                onClick: () => onApply(finding)
-                              }, t('checkup.apply'))
-                            : null
-                        )
-                      )
-                    })
-                  )
-                : null,
-              // 结果是快照，不是实时状态。不加这句，用户会拿十分钟前的结论
-              // 去判断刚改过的记忆。
-              e('div', { className: 'an-hintline' }, t('checkup.stale'))
-            )
+        body
       )
     }
 
@@ -2903,7 +2973,7 @@ window.__ModuleLoader__.load({
       const conflicts = Array.isArray(props.conflicts) ? props.conflicts : []
       if (clusters.length === 0 && conflicts.length === 0) return null
 
-      return e('div', { style: { marginTop: 12 } },
+      return e('div', { className: 'an-mt12' },
         clusters.map((cluster, index) => e('div', { key: `c-${index}`, className: 'an-note' },
           `${t('cluster.title')}（${t('cluster.similarity')} ${cluster.similarity}）：${(cluster.texts ?? []).join('　|　')}`
         )),
@@ -3062,17 +3132,143 @@ window.__ModuleLoader__.load({
         )
       }
 
-      return e('div', { style: { marginTop: 20 } },
-        e('div', { className: 'an-row-between' },
-          e('div', { className: 'an-card-title' }, t('imp.open')),
-          e('button', {
-            type: 'button',
-            className: 'an-btn an-btn-sm',
-            onClick: () => (open ? closePanel() : setOpen(true))
-          }, open ? t('imp.cancel') : t('imp.open'))
-        ),
+      const header = e('div', { className: 'an-row-between' },
+        e('div', { className: 'an-card-title' }, t('imp.open')),
+        e('button', {
+          type: 'button',
+          className: 'an-btn an-btn-sm',
+          onClick: () => (open ? closePanel() : setOpen(true))
+        }, open ? t('imp.cancel') : t('imp.open'))
+      )
 
-        open ? e('div', { className: 'an-import' },
+      // 面板正文只在打开时构建。原来写成 `open ? e(...) : null`，而它里面又套着
+      // 「解析出结果没有」「解析出几条」「这一条是不是被丢掉了」几层三元 ——
+      // 规则明确禁止嵌套三元，而且四层缩进之后没人能看出哪个条件管哪一块。
+      // 改成顺序构建：每块各自判断，最后拼起来。
+      let panelBody = null
+      if (open) {
+        const copyLabel = copied ? t('imp.copied') : t('imp.copy')
+        const parseLabel = busy === 'parse' ? t('imp.parsing') : t('imp.parse')
+
+        let resultBlock = null
+        if (result) {
+          let itemsBlock = null
+          if (items.length === 0) {
+            itemsBlock = e('div', { className: 'an-import-summary' }, t('imp.emptyResult'))
+          } else {
+            itemsBlock = e('div', null,
+              items.map((item, index) => e('div', {
+                key: `imp-${index}`,
+                className: 'an-import-item'
+              },
+                e('div', { className: 'an-import-item-text' },
+                  dropped[index] === true
+                    ? e('s', null, item.text)
+                    : item.text,
+                  // 归类理由放在条目下方：用户看到「本工作区」会立刻问「凭什么」。
+                  item.reason ? e('div', { className: 'an-import-summary' }, item.reason) : null,
+                  // 同义提示（宿主用 findImportOverlaps 算的）：撞上缓冲区里已有的候选时
+                  // 说清「跟哪条像」。只提示 —— 两条都留着也完全合法，用户删哪条由他定。
+                  item.overlap
+                    ? e('div', { className: 'an-import-summary' },
+                      t('imp.overlap').split('{text}').join(String(item.overlap.pendingText ?? '')))
+                    : null
+                ),
+                dropped[index] === true
+                  ? e('span', { className: 'an-import-item-actions' },
+                    e('button', {
+                      type: 'button',
+                      className: 'an-btn an-btn-sm',
+                      onClick: () => setDropped((prev) => ({ ...prev, [index]: false }))
+                    }, t('imp.restore'))
+                  )
+                  : e('span', { className: 'an-import-item-actions' },
+                    layerButton(item, index),
+                    e('button', {
+                      type: 'button',
+                      className: 'an-btn an-btn-sm',
+                      onClick: () => setDropped((prev) => ({ ...prev, [index]: true }))
+                    }, t('imp.drop'))
+                  )
+              )),
+
+              e('div', { className: 'an-import-summary' },
+                t('imp.selected').split('{n}').join(String(keptCount)).split('{total}').join(String(items.length))
+              ),
+              e('div', { className: 'an-actions' },
+                e('button', {
+                  type: 'button',
+                  className: 'an-btn an-btn-sm',
+                  disabled: keptCount === 0 || busy !== '',
+                  onClick: doCommit
+                }, busy === 'commit' ? t('imp.committing') : t('imp.commit')),
+                e('button', {
+                  type: 'button',
+                  className: 'an-btn an-btn-sm',
+                  disabled: busy !== '',
+                  onClick: closePanel
+                }, t('imp.cancel'))
+              )
+            )
+          }
+
+          // ── 被拦下的部分：逐类说明为什么没进来 ──
+          let blockedBlock = null
+          if (blocked.length > 0) {
+            blockedBlock = e('div', { className: 'an-import-blocked' },
+              e('div', null, t('imp.blockedTitle')),
+              blocked.map((entry, index) => e('div', { key: `b-${index}` },
+                e('code', null, `[${(entry.credentials ?? []).join(', ')}] `),
+                entry.text
+              )),
+              e('div', null, t('imp.blockedHint'))
+            )
+          }
+          let tooLongBlock = null
+          if (tooLong.length > 0) {
+            tooLongBlock = e('div', { className: 'an-import-summary' },
+              t('imp.tooLongTitle'),
+              e('div', null, t('imp.tooLongHint').split('{max}').join(String(500)))
+            )
+          }
+          let duplicatesBlock = null
+          if (duplicates.length > 0) {
+            duplicatesBlock = e('div', { className: 'an-import-summary' },
+              t('imp.duplicateTitle')
+            )
+          }
+          let overflowBlock = null
+          if (overflow.length > 0) {
+            overflowBlock = e('div', { className: 'an-import-summary' },
+              t('imp.overflowTitle'),
+              e('div', null, t('imp.overflowHint').split('{max}').join(String(spec.maxItems)))
+            )
+          }
+          let skippedBlock = null
+          if (Number(counts.skipped ?? 0) > 0) {
+            skippedBlock = e('div', { className: 'an-import-summary' },
+              t('imp.skippedHint').split('{n}').join(String(counts.skipped))
+            )
+          }
+
+          resultBlock = e('div', null,
+            e('hr', { className: 'an-import-divider' }),
+            e('div', { className: 'an-import-title' }, t('imp.resultTitle')),
+            e('div', { className: 'an-import-summary' },
+              t('imp.resultCounts')
+                .split('{pieces}').join(String(counts.pieces ?? items.length))
+                .split('{accepted}').join(String(counts.accepted ?? items.length))
+            ),
+            itemsBlock,
+            blockedBlock,
+            tooLongBlock,
+            duplicatesBlock,
+            overflowBlock,
+            skippedBlock
+          )
+        }
+
+        panelBody = e('div', { className: 'an-import' },
           // ── 第 1 步：提示词 ──
           e('div', { className: 'an-import-step' },
             e('div', null,
@@ -3083,7 +3279,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'an-btn an-btn-sm',
               onClick: copyPrompt
-            }, copied ? t('imp.copied') : t('imp.copy'))
+            }, copyLabel)
           ),
           e('pre', { className: 'an-import-prompt' }, spec.prompt),
 
@@ -3091,7 +3287,7 @@ window.__ModuleLoader__.load({
 
           // ── 第 2 步：粘贴 ──
           e('div', { className: 'an-import-title' }, t('imp.step2')),
-          e('div', { className: 'an-field', style: { marginTop: 8 } },
+          e('div', { className: 'an-field an-mt8' },
             e('textarea', {
               id: 'an-import-text',
               className: 'an-textarea',
@@ -3108,107 +3304,16 @@ window.__ModuleLoader__.load({
               className: 'an-btn an-btn-sm',
               disabled: !text.trim() || busy !== '',
               onClick: doParse
-            }, busy === 'parse' ? t('imp.parsing') : t('imp.parse'))
+            }, parseLabel)
           ),
           e(ErrorBox, { error }),
 
           // ── 解析结果 ──
-          result ? e('div', null,
-            e('hr', { className: 'an-import-divider' }),
-            e('div', { className: 'an-import-title' }, t('imp.resultTitle')),
-            e('div', { className: 'an-import-summary' },
-              t('imp.resultCounts')
-                .split('{pieces}').join(String(counts.pieces ?? items.length))
-                .split('{accepted}').join(String(counts.accepted ?? items.length))
-            ),
+          resultBlock
+        )
+      }
 
-            items.length === 0
-              ? e('div', { className: 'an-import-summary' }, t('imp.emptyResult'))
-              : e('div', null,
-                items.map((item, index) => e('div', {
-                  key: `imp-${index}`,
-                  className: 'an-import-item'
-                },
-                  e('div', { className: 'an-import-item-text' },
-                    dropped[index] === true
-                      ? e('s', null, item.text)
-                      : item.text,
-                    // 归类理由放在条目下方：用户看到「本工作区」会立刻问「凭什么」。
-                    item.reason ? e('div', { className: 'an-import-summary' }, item.reason) : null,
-                    // 同义提示（宿主用 findImportOverlaps 算的）：撞上缓冲区里已有的候选时
-                    // 说清「跟哪条像」。只提示 —— 两条都留着也完全合法，用户删哪条由他定。
-                    item.overlap
-                      ? e('div', { className: 'an-import-summary' },
-                        t('imp.overlap').split('{text}').join(String(item.overlap.pendingText ?? '')))
-                      : null
-                  ),
-                  dropped[index] === true
-                    ? e('span', { className: 'an-import-item-actions' },
-                      e('button', {
-                        type: 'button',
-                        className: 'an-btn an-btn-sm',
-                        onClick: () => setDropped((prev) => ({ ...prev, [index]: false }))
-                      }, t('imp.restore'))
-                    )
-                    : e('span', { className: 'an-import-item-actions' },
-                      layerButton(item, index),
-                      e('button', {
-                        type: 'button',
-                        className: 'an-btn an-btn-sm',
-                        onClick: () => setDropped((prev) => ({ ...prev, [index]: true }))
-                      }, t('imp.drop'))
-                    )
-                )),
-
-                e('div', { className: 'an-import-summary' },
-                  t('imp.selected').split('{n}').join(String(keptCount)).split('{total}').join(String(items.length))
-                ),
-                e('div', { className: 'an-actions' },
-                  e('button', {
-                    type: 'button',
-                    className: 'an-btn an-btn-sm',
-                    disabled: keptCount === 0 || busy !== '',
-                    onClick: doCommit
-                  }, busy === 'commit' ? t('imp.committing') : t('imp.commit')),
-                  e('button', {
-                    type: 'button',
-                    className: 'an-btn an-btn-sm',
-                    disabled: busy !== '',
-                    onClick: closePanel
-                  }, t('imp.cancel'))
-                )
-              ),
-
-            // ── 被拦下的部分：逐类说明为什么没进来 ──
-            blocked.length > 0 ? e('div', { className: 'an-import-blocked' },
-              e('div', null, t('imp.blockedTitle')),
-              blocked.map((entry, index) => e('div', { key: `b-${index}` },
-                e('code', null, `[${(entry.credentials ?? []).join(', ')}] `),
-                entry.text
-              )),
-              e('div', null, t('imp.blockedHint'))
-            ) : null,
-
-            tooLong.length > 0 ? e('div', { className: 'an-import-summary' },
-              t('imp.tooLongTitle'),
-              e('div', null, t('imp.tooLongHint').split('{max}').join(String(500)))
-            ) : null,
-
-            duplicates.length > 0 ? e('div', { className: 'an-import-summary' },
-              t('imp.duplicateTitle')
-            ) : null,
-
-            overflow.length > 0 ? e('div', { className: 'an-import-summary' },
-              t('imp.overflowTitle'),
-              e('div', null, t('imp.overflowHint').split('{max}').join(String(spec.maxItems)))
-            ) : null,
-
-            Number(counts.skipped ?? 0) > 0 ? e('div', { className: 'an-import-summary' },
-              t('imp.skippedHint').split('{n}').join(String(counts.skipped))
-            ) : null
-          ) : null
-        ) : null
-      )
+      return e('div', { className: 'an-mt20' }, header, panelBody)
     }
 
     /**
@@ -3305,6 +3410,39 @@ window.__ModuleLoader__.load({
 
       const total = audit.total ?? 0
 
+      // 展开后的明细。空态里那句文案本身又是一个三元（「正在加载」vs「确实没有」），
+      // 若留在外面就会构成嵌套三元；这里先算好再拼。
+      let body = null
+      if (expanded) {
+        let emptyText = t('audit.empty')
+        if (state.auditLoading && entries.length === 0) emptyText = t('audit.loading')
+        const listOrEmpty = shown.length === 0
+          ? e('div', { className: 'an-empty' }, emptyText)
+          : e('div', { className: 'an-list' },
+              shown.map((entry) => e(AuditItem, {
+                key: entry.id,
+                t,
+                entry,
+                sourceText: audit.sourceText,
+                compact: false
+              }))
+            )
+        body = e('div', { className: 'an-recent-body' },
+          state.auditError ? e(ErrorBox, { error: state.auditError }) : null,
+          listOrEmpty,
+          e('div', { className: 'an-actions an-mt10' },
+            e('button', {
+              type: 'button',
+              className: 'an-btn an-btn-sm an-btn-danger',
+              disabled: entries.length === 0,
+              onClick: clear
+            }, t('audit.clear'))
+          ),
+          // 「只保留最近 200 条」属于说明，只在真正展开看全量时才提一句。
+          e(Hint, null, t('audit.maxHint'))
+        )
+      }
+
       return e('section', {
         className: 'an-recent',
         // 展开态放 data 属性而不是往 className 里再拼一个词：
@@ -3325,33 +3463,7 @@ window.__ModuleLoader__.load({
           // 条数是这一行里唯一必须常驻的数字：它回答「值不值得点开」
           e('span', { className: 'an-badge' }, `${t('audit.total')} ${total} ${t('audit.records')}`.trim())
         ),
-        expanded
-          ? e('div', { className: 'an-recent-body' },
-              state.auditError ? e(ErrorBox, { error: state.auditError }) : null,
-              shown.length === 0
-                ? e('div', { className: 'an-empty' },
-                    state.auditLoading && entries.length === 0 ? t('audit.loading') : t('audit.empty'))
-                : e('div', { className: 'an-list' },
-                    shown.map((entry) => e(AuditItem, {
-                      key: entry.id,
-                      t,
-                      entry,
-                      sourceText: audit.sourceText,
-                      compact: false
-                    }))
-                  ),
-              e('div', { className: 'an-actions', style: { marginTop: 10 } },
-                e('button', {
-                  type: 'button',
-                  className: 'an-btn an-btn-sm an-btn-danger',
-                  disabled: entries.length === 0,
-                  onClick: clear
-                }, t('audit.clear'))
-              ),
-              // 「只保留最近 200 条」属于说明，只在真正展开看全量时才提一句。
-              e(Hint, null, t('audit.maxHint'))
-            )
-          : null
+        body
       )
     }
 
@@ -3692,7 +3804,7 @@ window.__ModuleLoader__.load({
       }
 
       const doReset = async () => {
-        // 与 dsh-soul 删预设同一套写法（globalThis.confirm）：重置会清空
+        // 与某同类人设插件删预设同一套写法（globalThis.confirm）：重置会清空
         // 已保存的人设字段，值得一次拦截。非浏览器环境没有 confirm 就直接放行。
         if (typeof globalThis.confirm === 'function' && !globalThis.confirm(t('common.reset.confirm'))) return
         const result = await controller.resetConfig()
@@ -3983,14 +4095,56 @@ window.__ModuleLoader__.load({
         return lines.join('\n')
       })()
 
+      // toast 的种类决定配色；先算好类名，避免在 e(...) 实参里套三元。
+      let toastNode = null
+      if (toast) {
+        const toastClass = toast.kind === 'err' ? 'an-toast an-toast-err' : 'an-toast an-toast-ok'
+        toastNode = e('div', { className: toastClass }, toast.text)
+      }
+
+      // 提议条里的「提出于」是可选的。它若直接以三元塞在提议条内部，
+      // 就构成嵌套三元（规则禁止），所以在元素树外先算好。
+      let proposalTimeLine = null
+      if (state.pendingProposal && state.pendingProposal.proposedAt) {
+        proposalTimeLine = e('div', { className: 'an-hintline an-mt6' },
+          `${t('proposal.at')} ${shortTime(state.pendingProposal.proposedAt)}`)
+      }
+
+      // 存储来源这一块：信息是「排查插件到底读的哪份介质」，所以位置与格式戳缺一不可。
+      // 原来整块写成 `state.source ? e(...) : null`，里面四行各自又套三元（含一个
+      // 嵌套在 class 模板里的 kind 判断），规则禁止。改成先收集行再决定画不画。
+      const sourceInfo = (() => {
+        const source = state.source
+        if (!source) return null
+        const isStorage = source.kind === 'storage'
+        const rows = [
+          e('dt', { key: 'src-k' }, t('source.label')),
+          e('dd', { key: 'src-v' },
+            `${isStorage ? t('source.domain') : t('source.none')}${source.path ? `　${source.path}` : ''}`)
+        ]
+        if (!isStorage && source.reason) {
+          rows.push(e('dt', { key: 'rsn-k' }, t('source.reason')))
+          rows.push(e('dd', { key: 'rsn-v' }, reasonText(t, source.reason)))
+        }
+        if (!isStorage && source.message) {
+          rows.push(e('dt', { key: 'msg-k' }, t('source.message')))
+          rows.push(e('dd', { key: 'msg-v' }, source.message))
+        }
+        // 「存储格式」一行：只在域真打开了（有版本戳）时出现。它是诊断信息 ——
+        // 排查「插件到底读的哪份介质」时，位置与格式戳缺一不可。
+        if (Number.isInteger(source.domainVersion)) {
+          rows.push(e('dt', { key: 'fmt-k' }, t('source.format')))
+          rows.push(e('dd', { key: 'fmt-v' }, t('source.formatText').split('{n}').join(String(source.domainVersion))))
+        }
+        return e('dl', { className: 'an-kv' }, rows)
+      })()
+
       return e('div', { className: 'an-root' },
-        toast
-          ? e('div', { className: `an-toast ${toast.kind === 'err' ? 'an-toast-err' : 'an-toast-ok'}` }, toast.text)
-          : null,
+        toastNode,
 
         e('div', { className: 'an-row-between' },
-          e('div', { style: { minWidth: 0 } },
-            e('div', { style: { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, t('page.title')),
+          e('div', { className: 'an-minw0' },
+            e('div', { className: 'an-page-title' }, t('page.title')),
             e('div', { className: 'an-hintline' }, t('page.desc'))
           ),
           e('span', { className: 'an-badge' }, `v${VERSION}`)
@@ -4020,11 +4174,8 @@ window.__ModuleLoader__.load({
                   .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
                   .join('\n')
               ),
-              state.pendingProposal.proposedAt
-                ? e('div', { className: 'an-hintline', style: { marginTop: 6 } },
-                    `${t('proposal.at')} ${shortTime(state.pendingProposal.proposedAt)}`)
-                : null,
-              e('div', { className: 'an-actions', style: { marginTop: 8 } },
+              proposalTimeLine,
+              e('div', { className: 'an-actions an-mt8' },
                 e('button', {
                   type: 'button',
                   className: 'an-btn an-btn-primary an-btn-sm',
@@ -4048,7 +4199,7 @@ window.__ModuleLoader__.load({
           ...cardSlot('preset'),
           title: t('preset.title'),
           desc: t('preset.desc'),
-          aside: e('span', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+          aside: e('span', { className: 'an-badgewrap' },
             activePreset
               ? e('span', { className: 'an-badge an-badge-ok', title: t('preset.activeHint') },
                 `${t('preset.activeTag')}：${activePreset.name}`)
@@ -4056,8 +4207,8 @@ window.__ModuleLoader__.load({
             e('span', { className: 'an-badge' }, `${(state.presets ?? []).length} 项`)
           )
         },
-          e('div', { className: 'an-row', style: { gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' } },
-            e('div', { className: 'an-field', style: { flex: '1 1 240px' } },
+          e('div', { className: 'an-row an-rowend' },
+            e('div', { className: 'an-field an-flex240' },
               e('label', { htmlFor: 'an-preset-pick' }, t('preset.pick')),
               e('select', {
                 id: 'an-preset-pick',
@@ -4082,10 +4233,10 @@ window.__ModuleLoader__.load({
           ),
           e(Hint, null, t('preset.builtinHint')),
 
-          e('div', { style: { marginTop: 16 } },
+          e('div', { className: 'an-mt16' },
             e('div', { className: 'an-card-title' }, t('preset.saveTitle')),
-            e('div', { className: 'an-row', style: { gap: 8, marginTop: 10, flexWrap: 'wrap' } },
-              e('div', { className: 'an-field', style: { flex: '1 1 200px' } },
+            e('div', { className: 'an-row an-rowgap8mt10' },
+              e('div', { className: 'an-field an-flex200' },
                 e('input', {
                   className: 'an-input',
                   type: 'text',
@@ -4095,7 +4246,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setPresetForm((prev) => ({ ...prev, name: event.target.value }))
                 })
               ),
-              e('div', { className: 'an-field', style: { flex: '2 1 260px' } },
+              e('div', { className: 'an-field an-flex260' },
                 e('input', {
                   className: 'an-input',
                   type: 'text',
@@ -4116,7 +4267,7 @@ window.__ModuleLoader__.load({
 
             // 自建预设可删（内置不可删，故不给按钮）
             (state.presets ?? []).filter((preset) => !preset.builtin).length > 0
-              ? e('div', { className: 'an-list', style: { marginTop: 10 } },
+              ? e('div', { className: 'an-list an-mt10' },
                   (state.presets ?? []).filter((preset) => !preset.builtin).map((preset) =>
                     e('div', { className: 'an-item', key: preset.id },
                       e('div', { className: 'an-item-main' },
@@ -4186,33 +4337,7 @@ window.__ModuleLoader__.load({
               onFill: (text) => patchLocal('agentRole', text)
             })
           ),
-          state.source
-            ? e('dl', { className: 'an-kv' },
-                e('dt', null, t('source.label')),
-                e('dd', null, `${state.source.kind === 'storage' ? t('source.domain') : t('source.none')}${state.source.path ? `　${state.source.path}` : ''}`),
-                state.source.kind !== 'storage' && state.source.reason
-                  ? e('dt', null, t('source.reason'))
-                  : null,
-                state.source.kind !== 'storage' && state.source.reason
-                  ? e('dd', null, reasonText(t, state.source.reason))
-                  : null,
-                state.source.kind !== 'storage' && state.source.message
-                  ? e('dt', null, t('source.message'))
-                  : null,
-                state.source.kind !== 'storage' && state.source.message
-                  ? e('dd', null, state.source.message)
-                  : null,
-                // 「存储格式」一行：只在域真打开了（有版本戳）时出现。它是诊断信息 ——
-                // 排查「插件到底读的哪份介质」时，位置与格式戳缺一不可。
-                Number.isInteger(state.source.domainVersion)
-                  ? e('dt', null, t('source.format'))
-                  : null,
-                Number.isInteger(state.source.domainVersion)
-                  ? e('dd', null, t('source.formatText')
-                    .split('{n}').join(String(state.source.domainVersion)))
-                  : null
-              )
-            : null
+          sourceInfo
         ),
 
         // ---------------- 用户背景 ----------------
@@ -4297,8 +4422,8 @@ window.__ModuleLoader__.load({
             labelOf: (id) => t(`wording.${id}`),
             onChange: (next) => patchLocal('style', next)
           }),
-          e('div', { className: 'an-row', style: { gap: 16, flexWrap: 'wrap' } },
-            e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+          e('div', { className: 'an-row an-gap16wrap' },
+            e('div', { className: 'an-flex240an' },
               e(wordingField, {
                 id: 'trait-heading',
                 label: t('style.headingLists'),
@@ -4310,7 +4435,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('headingLists', next)
               })
             ),
-            e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            e('div', { className: 'an-flex240an' },
               e(wordingField, {
                 id: 'trait-emoji',
                 label: t('style.emoji'),
@@ -4322,7 +4447,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('emoji', next)
               })
             ),
-            e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            e('div', { className: 'an-flex240an' },
               e(wordingField, {
                 id: 'trait-tables',
                 label: t('style.tables'),
@@ -4335,8 +4460,8 @@ window.__ModuleLoader__.load({
               })
             )
           ),
-          e('div', { className: 'an-row', style: { gap: 16, flexWrap: 'wrap' } },
-            e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+          e('div', { className: 'an-row an-gap16wrap' },
+            e('div', { className: 'an-flex240an' },
               e(wordingField, {
                 id: 'length',
                 label: t('style.replyLength'),
@@ -4348,7 +4473,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('replyLength', next)
               })
             ),
-            e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            e('div', { className: 'an-flex240an' },
               e(wordingField, {
                 id: 'language',
                 label: t('style.language'),
@@ -4393,10 +4518,10 @@ window.__ModuleLoader__.load({
             label: t('trail.enabled'),
             onChange: (checked) => patchLocal('trailEnabled', checked)
           }),
-          e('div', { className: 'an-row', style: { gap: 16, flexWrap: 'wrap' } },
-            e('div', { className: 'an-field', style: { flex: '1 1 200px' } },
+          e('div', { className: 'an-row an-gap16wrap' },
+            e('div', { className: 'an-field an-flex200' },
               e('label', { htmlFor: 'an-trail-color' }, t('trail.color')),
-              e('div', { className: 'an-row', style: { gap: 8, alignItems: 'center' } },
+              e('div', { className: 'an-row an-rowcenter' },
                 // 原生取色器与文本输入绑同一个值，因此天然双向：色板里挑一个，
                 // 文本立刻跟着变；手打一个十六进制，色板也跟着走到那个颜色。
                 // 取色器只认 #rrggbb，所以喂给它的值必须先过 safeTrailColor，
@@ -4420,7 +4545,7 @@ window.__ModuleLoader__.load({
               ),
               e(Hint, null, t('trail.colorHint'))
             ),
-            e('div', { className: 'an-field', style: { flex: '1 1 140px' } },
+            e('div', { className: 'an-field an-flex140' },
               e('label', { htmlFor: 'an-trail-speed' }, t('trail.speed')),
               e('select', {
                 id: 'an-trail-speed',
@@ -4433,7 +4558,7 @@ window.__ModuleLoader__.load({
                 )
               )
             ),
-            e('div', { className: 'an-field', style: { flex: '1 1 140px' } },
+            e('div', { className: 'an-field an-flex140' },
               e('label', { htmlFor: 'an-trail-width' }, t('trail.width')),
               e('select', {
                 id: 'an-trail-width',
@@ -4450,7 +4575,7 @@ window.__ModuleLoader__.load({
           // 取色的三个入口（取色器 / 文本 / 下面这排内置色）写的是同一个字段，
           // 所以三处永远同步 —— 不需要额外的状态机。内置色仍保留：它是最快的
           // 一条路（一次点击，不用先想颜色再记十六进制），但不再是唯一入口。
-          e('div', { className: 'an-actions', style: { flexWrap: 'wrap' } },
+          e('div', { className: 'an-actions an-wrap' },
             TRAIL_PRESET_COLORS.map((color) =>
               e('button', {
                 key: color,
@@ -4534,11 +4659,20 @@ window.__ModuleLoader__.load({
                 )
               ),
           state.workspaceError ? e(ErrorBox, { error: state.workspaceError }) : null,
-          state.workspacePath
-            ? e('div', null,
+          (() => {
+            if (!state.workspacePath) return e('div', { className: 'an-hintline' }, t('ws.globalOnly'))
+            // 工作区状态那行是可选诊断信息。它原来写成 `wsState ? e(...) : null`，
+            // 而外层本来就是三元，两下一叠就是规则禁止的嵌套三元 —— 先算好再拼。
+            let wsNoteLine = null
+            if (wsState) {
+              let existsLabel = t('ws.notExists')
+              if (wsState.exists) existsLabel = t('ws.exists')
+              wsNoteLine = e('div', { className: 'an-note' }, `${existsLabel}　${wsState.path ?? ''}`)
+            }
+            return e('div', null,
                 e(Hint, null, t('ws.hint')),
 
-                e('div', { className: 'an-card-title', style: { marginTop: 14 } }, t('ws.section.identity')),
+                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.identity')),
                 e('div', { className: 'an-field' },
                   e('label', { htmlFor: 'an-ws-name' }, t('identity.name')),
                   e('input', {
@@ -4561,7 +4695,7 @@ window.__ModuleLoader__.load({
                   })
                 ),
 
-                e('div', { className: 'an-card-title', style: { marginTop: 14 } }, t('ws.section.user')),
+                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.user')),
                 e('div', { className: 'an-field' },
                   e('label', { htmlFor: 'an-ws-address' }, t('user.address')),
                   e('input', {
@@ -4595,10 +4729,10 @@ window.__ModuleLoader__.load({
                   })
                 ),
 
-                e('div', { className: 'an-card-title', style: { marginTop: 14 } }, t('ws.section.style')),
+                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.style')),
                 e(Hint, null, t('ws.styleHint')),
-                e('div', { className: 'an-row', style: { gap: 16, flexWrap: 'wrap' } },
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                e('div', { className: 'an-row an-gap16wrap' },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-style',
                       label: t('style.style'),
@@ -4609,7 +4743,7 @@ window.__ModuleLoader__.load({
                       onChange: patchWs
                     })
                   ),
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-heading',
                       label: t('style.headingLists'),
@@ -4620,7 +4754,7 @@ window.__ModuleLoader__.load({
                       onChange: patchWs
                     })
                   ),
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-emoji',
                       label: t('style.emoji'),
@@ -4632,8 +4766,8 @@ window.__ModuleLoader__.load({
                     })
                   )
                 ),
-                e('div', { className: 'an-row', style: { gap: 16, flexWrap: 'wrap' } },
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                e('div', { className: 'an-row an-gap16wrap' },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-tables',
                       label: t('style.tables'),
@@ -4644,7 +4778,7 @@ window.__ModuleLoader__.load({
                       onChange: patchWs
                     })
                   ),
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-length',
                       label: t('style.replyLength'),
@@ -4655,7 +4789,7 @@ window.__ModuleLoader__.load({
                       onChange: patchWs
                     })
                   ),
-                  e('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+                  e('div', { className: 'an-flex240an' },
                     e(overrideInput, {
                       id: 'ws-language',
                       label: t('style.language'),
@@ -4678,12 +4812,8 @@ window.__ModuleLoader__.load({
                   })
                 ),
 
-                wsState
-                  ? e('div', { className: 'an-note' },
-                      `${wsState.exists ? t('ws.exists') : t('ws.notExists')}　${wsState.path ?? ''}`
-                    )
-                  : null,
-                e('div', { className: 'an-actions', style: { marginTop: 12 } },
+                wsNoteLine,
+                e('div', { className: 'an-actions an-mt12' },
                   e('button', {
                     type: 'button',
                     className: 'an-btn an-btn-primary',
@@ -4698,7 +4828,7 @@ window.__ModuleLoader__.load({
                   }, t('ws.clear'))
                 )
               )
-            : e('div', { className: 'an-hintline' }, t('ws.globalOnly'))
+          })(),
         ),
 
         // ---------------- 长期记忆 ----------------
@@ -4746,8 +4876,8 @@ window.__ModuleLoader__.load({
               onChange: (event) => patchMemory('nightlyHour', Number(event.target.value))
             })
           ),
-          e('div', { className: 'an-row', style: { gap: 16 } },
-            e('div', { className: 'an-field', style: { flex: '1 1 0' } },
+          e('div', { className: 'an-row an-gap16' },
+            e('div', { className: 'an-field an-flexfill' },
               e('label', { htmlFor: 'an-mem-max' }, t('mem.maxPending')),
               e('input', {
                 id: 'an-mem-max',
@@ -4759,7 +4889,7 @@ window.__ModuleLoader__.load({
                 onChange: (event) => patchMemory('maxPending', Number(event.target.value))
               })
             ),
-            e('div', { className: 'an-field', style: { flex: '1 1 0' } },
+            e('div', { className: 'an-field an-flexfill' },
               e('label', { htmlFor: 'an-mem-inject' }, t('mem.maxInjected')),
               e('input', {
                 id: 'an-mem-inject',
@@ -4776,7 +4906,7 @@ window.__ModuleLoader__.load({
             ),
             // 字符预算与条数取先到者。只有条数时，40 条长记忆一样能挤爆上下文 ——
             // 所以这一项不是「高级选项」，它和条数一样是硬约束。
-            e('div', { className: 'an-field', style: { flex: '1 1 0' } },
+            e('div', { className: 'an-field an-flexfill' },
               e('label', { htmlFor: 'an-mem-chars' }, t('mem.maxInjectedChars')),
               e('input', {
                 id: 'an-mem-chars',
@@ -4801,7 +4931,7 @@ window.__ModuleLoader__.load({
           // 这一段的保存按钮已收到页面底部的保存栏（理由见 identity 卡头）。
 
           // 待审缓冲区
-          e('div', { style: { marginTop: 20 } },
+          e('div', { className: 'an-mt20' },
             e('div', { className: 'an-row-between' },
               e('div', { className: 'an-card-title' }, `${t('mem.pending')}（${pending.length}）`),
               e('div', { className: 'an-actions' },
@@ -4844,9 +4974,9 @@ window.__ModuleLoader__.load({
           ),
 
           // 手动添加
-          e('div', { style: { marginTop: 20 } },
+          e('div', { className: 'an-mt20' },
             e('div', { className: 'an-card-title' }, t('mem.add')),
-            e('div', { className: 'an-field', style: { marginTop: 10 } },
+            e('div', { className: 'an-field an-mt10' },
               e('textarea', {
                 className: 'an-textarea',
                 value: newMemory.text,
@@ -4891,7 +5021,7 @@ window.__ModuleLoader__.load({
           ),
 
           // 已采纳
-          e('div', { style: { marginTop: 20 } },
+          e('div', { className: 'an-mt20' },
             e('div', { className: 'an-card-title' }, `${t('mem.adopted')}（${adopted.length}）`),
             e(MemoryList, {
               t,
@@ -4939,7 +5069,7 @@ window.__ModuleLoader__.load({
 
           // 已丢弃（折叠为计数，避免占屏）
           discarded.length > 0
-            ? e('div', { style: { marginTop: 16 } },
+            ? e('div', { className: 'an-mt16' },
                 e('div', { className: 'an-card-title' }, `${t('mem.discarded')}（${discarded.length}）`),
                 e(MemoryList, {
                   t,
@@ -5025,7 +5155,7 @@ window.__ModuleLoader__.load({
           // 运行计数：这一块存在的唯一理由，是让「查了没事」与「压根没跑」可区分。
           // checks=0 时界面必须明说「没在工作」，不能因为「没有提醒 = 没问题」而显示得
           // 和一切正常一样 —— 那正是用户定的红线里最忌讳的那种谎报。
-          e('div', { style: { marginTop: 20 } },
+          e('div', { className: 'an-mt20' },
             e('div', { className: 'an-card-title' }, t('quality.stats')),
             (() => {
               const stats = state.qualityStats
@@ -5033,72 +5163,100 @@ window.__ModuleLoader__.load({
               if (stats.checks === 0) {
                 return e('div', { className: 'an-invalid' }, t('quality.statsIdle'))
               }
+              const findingsLabel = stats.last
+                ? (() => {
+                  // 「一次都没报」和「报了几条」在界面上必须是两种不同的说法；
+                  // 把这句话先算出来，它就不会在 e() 的实参里再套一层三元。
+                  if (stats.last.findings.length === 0) return t('quality.statsNone')
+                  return stats.last.findings.join('、')
+                })()
+                : ''
+              let lastRunLine = null
+              if (stats.last) {
+                lastRunLine = e(Hint, null,
+                  `${t('quality.statsLast')} seq=${stats.last.seq} · ${stats.last.chars} ${t('quality.statsChars')} · `
+                  + `${t('quality.statsFindings')} ${findingsLabel}`
+                )
+              }
               return e('div', null,
-                e('div', { className: 'an-row', style: { gap: 12, flexWrap: 'wrap' } },
+                e('div', { className: 'an-row an-gap12wrap' },
                   e('span', { className: 'an-badge' }, `${t('quality.statsChecks')} ${stats.checks}`),
                   e('span', { className: 'an-badge' }, `${t('quality.statsReminders')} ${stats.reminders}`),
                   stats.suppressed > 0
                     ? e('span', { className: 'an-badge' }, `${t('quality.statsSuppressed')} ${stats.suppressed}`)
                     : null
                 ),
-                stats.last
-                  ? e(Hint, null,
-                      `${t('quality.statsLast')} seq=${stats.last.seq} · ${stats.last.chars} ${t('quality.statsChars')} · `
-                      + `${t('quality.statsFindings')} ${stats.last.findings.length > 0 ? stats.last.findings.join('、') : t('quality.statsNone')}`
-                    )
-                  : null
+                lastRunLine
               )
             })()
           )
         ),
 
         // ---------------- 预览 ----------------
-        e(Card, {
-          id: 'preview',
-          t,
-          ...cardSlot('preview'),
-          title: t('preview.title'),
-          desc: t('preview.desc'),
-          aside: previewOpen && state.preview
-            ? e('div', { className: 'an-actions' },
-                e('span', { className: 'an-badge' }, state.preview.draft ? t('preview.live') : t('preview.saved'))
-              )
-            : null
-        },
-          previewOpen
-            ? e('div', null,
-                state.previewError ? e(ErrorBox, { error: state.previewError }) : null,
-                state.previewLoading && !previewText
-                  ? e('div', { className: 'an-empty' }, t('preview.loading'))
-                  : (previewText ? e(Pre, { text: previewText }) : e('div', { className: 'an-empty' }, t('preview.empty'))),
-                // 字符数：注入是要花上下文的，长人设会挤掉对话本身。给个数字，
-                // 让「这段到底多长」有个可比较的量，而不是只能靠肉眼估。
-                previewText
-                  ? e(Hint, null, `${t('preview.chars')}: ${previewText.length}`)
-                  : null,
-                // 被校验挡下的草稿字段。预览刻意不为半截输入报错（用户还在打字），
-                // 但必须说清楚「你刚打的这个没算进去」—— 否则用户会以为预览里
-                // 就是自己输入的样子，而其实用的是上一次的合法值。
-                Array.isArray(state.preview?.invalid) && state.preview.invalid.length > 0
-                  ? e('div', { className: 'an-invalid' },
-                      t('preview.invalidTitle'),
-                      e('ul', { style: { margin: '4px 0 0', paddingLeft: 18 } },
-                        state.preview.invalid.map((item, index) =>
-                          e('li', { key: item?.key ?? index },
-                            `${item?.key ?? ''}${item?.reason ? ` — ${reasonText(t, item.reason) ?? item.reason}` : ''}`
-                          )
-                        )
-                      )
+        //
+        // 预览卡的两处内容都在这里先算好：aside（草稿/已保存徽标）与整块正文。
+        // 它们原来直接以三元塞在 e(Card, ...) 的实参里，而正文内部又有 loading /
+        // empty / invalid 三层三元 —— 那就是规则禁止的嵌套三元，必须在元素树外算。
+        (() => {
+          const previewAside = (() => {
+            if (!previewOpen || !state.preview) return null
+            return e('div', { className: 'an-actions' },
+              e('span', { className: 'an-badge' }, state.preview.draft ? t('preview.live') : t('preview.saved'))
+            )
+          })()
+
+          const previewBody = (() => {
+            if (!previewOpen) return null
+            let textBlock = null
+            if (state.previewLoading && !previewText) {
+              textBlock = e('div', { className: 'an-empty' }, t('preview.loading'))
+            } else if (previewText) {
+              textBlock = e(Pre, { text: previewText })
+            } else {
+              textBlock = e('div', { className: 'an-empty' }, t('preview.empty'))
+            }
+            let charLine = null
+            if (previewText) charLine = e(Hint, null, `${t('preview.chars')}: ${previewText.length}`)
+            // 被校验挡下的草稿字段。预览刻意不为半截输入报错（用户还在打字），
+            // 但必须说清楚「你刚打的这个没算进去」—— 否则用户会以为预览里
+            // 就是自己输入的样子，而其实用的是上一次的合法值。
+            let invalidBlock = null
+            if (Array.isArray(state.preview?.invalid) && state.preview.invalid.length > 0) {
+              invalidBlock = e('div', { className: 'an-invalid' },
+                t('preview.invalidTitle'),
+                e('ul', { className: 'an-list-indent' },
+                  state.preview.invalid.map((item, index) =>
+                    e('li', { key: item?.key ?? index },
+                      `${item?.key ?? ''}${item?.reason ? ` — ${reasonText(t, item.reason) ?? item.reason}` : ''}`
                     )
-                  : null,
-                state.preview?.description
-                  ? e(Hint, null, Object.entries(state.preview.description).map(([key, value]) =>
-                      e('span', { key, style: { marginRight: 12 } }, `${key}: ${value}`)
-                    ))
-                  : null
+                  )
+                )
               )
-            : null
-        ),
+            }
+            let descLine = null
+            if (state.preview?.description) {
+              descLine = e(Hint, null, Object.entries(state.preview.description).map(([key, value]) =>
+                e('span', { key, className: 'an-mr12' }, `${key}: ${value}`)
+              ))
+            }
+            return e('div', null,
+              state.previewError ? e(ErrorBox, { error: state.previewError }) : null,
+              textBlock,
+              charLine,
+              invalidBlock,
+              descLine
+            )
+          })()
+
+          return e(Card, {
+            id: 'preview',
+            t,
+            ...cardSlot('preview'),
+            title: t('preview.title'),
+            desc: t('preview.desc'),
+            aside: previewAside
+          }, previewBody)
+        })(),
 
         // ---------------- 底部保存栏 ----------------
         //
@@ -5164,7 +5322,7 @@ window.__ModuleLoader__.load({
       const NAV_MARKER = 'data-an-settings-nav'
       const ICON_MARKER = 'data-an-icon-replaced'
 
-      // 与 dsh-soul 的图标（光轨弧 + 火花）刻意不同形，避免两个栏目在导航栏里
+      // 与某同类人设插件的图标（光轨弧 + 火花）刻意不同形，避免两个栏目在导航栏里
       // 长得一样。本插件管的是「人设 + 记忆」，故用「人像 + 火花」：
       // 头 + 肩是「谁」，火花是「随时间沉淀下来」。单色线描，配色交给 currentColor
       // —— 与邻居统一，并自动跟随主题/选中/禁用态，不必自己判暗色。
@@ -5313,7 +5471,7 @@ window.__ModuleLoader__.load({
 
       // ── 槽位注册 ────────────────────────────────────────────────────────
 
-      // 设置页注册：id 必须与 dsh-soul 的 'soul-settings' 区分开，
+      // 设置页注册：id 必须与某同类人设插件的 它占用的设置页 id 区分开，
       // 否则会顶替它的那一格（settings.section 的文档：复用已有 id 即替换该格）。
       ctx.slots.inject('settings.section', () => ctx.slots.register({
         name: 'settings.section',
@@ -5327,7 +5485,7 @@ window.__ModuleLoader__.load({
         })
       }, AnimaSettings))
 
-      // 输入框左下角的快捷开关。id 同样避开 dsh-soul 的 'soul-quick-toggle'。
+      // 输入框左下角的快捷开关。id 同样避开某同类人设插件的 它占用的快捷开关 id。
       ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
         name: 'conversation.input.left',
         id: 'anima-quick-toggle',
@@ -5340,7 +5498,7 @@ window.__ModuleLoader__.load({
       }, AnimaQuickToggle))
 
       // 输入框光轨。挂 overlay 槽位是因为它渲染在卡片内部，closest 能定位到卡片；
-      // id 避开 dsh-soul 的 'soul-trail'。
+      // id 避开某同类人设插件的 它占用的光轨开关 id。
       ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({
         name: 'conversation.input.overlay',
         id: 'anima-trail',

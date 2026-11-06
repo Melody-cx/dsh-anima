@@ -8,7 +8,15 @@
 // 曾经发生过装机副本是旧版、13 条路由只注册了 8 条、而所有单测全绿的情况。
 // 本脚本断言的是**进程里那份**代码的实际行为。
 
-const origin = process.argv[2] || 'http://127.0.0.1:19387'
+const rawOrigin = process.argv[2] ?? ''
+if (rawOrigin === '') {
+  // 不猜端口：宿主每次启动的端口都是随机的，写死一个默认值只会连到别的进程上，
+  // 然后把别人的路由当成我们的来断言 —— 那种「通过」比失败更坏。
+  console.error('用法：node scripts/check-live.mjs http://127.0.0.1:PORT')
+  console.error('（端口请从宿主启动日志或 Web GUI 地址里取，本脚本不提供默认值。）')
+  process.exit(2)
+}
+const origin = rawOrigin.replace(/\/+$/, '')
 const failures = []
 let passed = 0
 
@@ -109,7 +117,7 @@ if (state.status === 200 && state.body) {
     if (!('presets' in body)) throw new Error('缺 presets 键')
   })
 
-  // 融合 dsh-soul 后新增的两个契约：模型能改哪些字段（toolFields），
+  // 融合同类插件的字段后新增的两个契约：模型能改哪些字段（toolFields），
   // 以及「模型提了改动、等用户点头」的那条提议（无提议时必须是 null 而不是缺键）。
   check('state.limits.toolFields 是 12 项（模型可改的人设字段）', () => {
     const list = body.limits?.toolFields
@@ -124,7 +132,7 @@ if (state.status === 200 && state.body) {
     }
   })
 
-  check('光轨与工具确认四项已在 config 里落盘（融合 dsh-soul 的新字段）', () => {
+  check('光轨与工具确认四项已在 config 里落盘（融合同类插件的新字段）', () => {
     const config = body.config ?? {}
     const missing = ['requireToolConfirmation', 'trailEnabled', 'trailColor', 'trailSpeed', 'trailWidth']
       .filter((key) => !(key in config))
@@ -199,9 +207,9 @@ if (state.status === 200 && state.body) {
 
   console.log('\n[用户数据没丢]')
 
-  // 名字是**用户资产**，不该被脚本钉成某个具体值 —— 2026-10-11 用户把
-  // 「小沃」改成「大肥鱼」后，这里曾误报 FAIL。断言改成「非空 + 相邻字段没被
-  // 重置连坐」：真正要防的是「数据丢了」，不是「用户改了名」。
+  // 名字是**用户资产**，不该被脚本钉成某个具体值 —— 早期这里断言过一个写死的
+  // 名字，用户改名后立刻误报 FAIL。断言改成「非空 + 相邻字段没被重置连坐」：
+  // 真正要防的是「数据丢了」，不是「用户改了名」。
   check('agentName 非空（存储里有名字，不是被重置过）', () => {
     const name = body.config?.agentName
     if (typeof name !== 'string' || name.trim() === '') {
@@ -209,8 +217,12 @@ if (state.status === 200 && state.body) {
     }
   })
 
-  check('addressUserAs 仍是「老大」', () => {
-    if (body.config?.addressUserAs !== '老大') throw new Error(`实际 '${body.config?.addressUserAs}'`)
+  // 同理不钉具体称呼：断言「非空 + 是字符串」，防的是被重置成空，不是用户改了叫法。
+  check('addressUserAs 非空（称呼没被重置掉）', () => {
+    const alias = body.config?.addressUserAs
+    if (typeof alias !== 'string' || alias.trim() === '') {
+      throw new Error(`addressUserAs 是空的 —— 可能被重置过`)
+    }
   })
 
   check('agentRole 非空', () => {

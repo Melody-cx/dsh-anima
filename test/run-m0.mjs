@@ -47,9 +47,27 @@ const ruleStats = QUALITY_RULES.map((rule) => {
     cases: rows.length,
     passed: v.filter((r) => r.ok === true).length,
     failed: v.filter((r) => r.ok === false).length,
-    status: v.length === 0 ? '未验（机器判不了，仅固化形态）' : (v.every((r) => r.ok) ? '通过' : '失败')
+    status: summarizeStatus(v)
   }
 })
+
+// 汇总状态：没有可验用例时不能说「通过」，也不能说「失败」——那是机器判不了。
+function summarizeStatus(rows) {
+  if (rows.length === 0) return '未验（机器判不了，仅固化形态）'
+  return rows.every((r) => r.ok) ? '通过' : '失败'
+}
+
+function tagOf(row) {
+  if (!row.verifiable) return '·'
+  return row.ok ? '✓' : '✗'
+}
+
+function detailOf(row) {
+  if (!row.verifiable) return '未验（机器判不了）'
+  if (row.ok) return row.shouldCatch ? '已抓到' : '未误报'
+  return row.shouldCatch ? '漏报' : '误报'
+}
+
 
 if (process.argv.includes('--json')) {
   console.log(JSON.stringify({ results, ruleStats }, null, 2))
@@ -58,13 +76,7 @@ if (process.argv.includes('--json')) {
   lines.push('M0 十二条样例结果')
   lines.push('='.repeat(46))
   for (const row of results) {
-    const tag = !row.verifiable ? '·' : row.ok ? '✓' : '✗'
-    const detail = !row.verifiable
-      ? '未验（机器判不了）'
-      : row.ok
-        ? (row.shouldCatch ? '已抓到' : '未误报')
-        : (row.shouldCatch ? '漏报' : '误报')
-    lines.push(`${tag} ${row.id} [${row.ruleId}] ${detail}  ${row.note}`)
+    lines.push(`${tagOf(row)} ${row.id} [${row.ruleId}] ${detailOf(row)}  ${row.note}`)
   }
   lines.push('='.repeat(46))
   lines.push(`可判定样例：${verifiable.length} 个，通过 ${passed.length}，失败 ${failed.length}`)

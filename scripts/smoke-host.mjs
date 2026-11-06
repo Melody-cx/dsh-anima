@@ -11,7 +11,7 @@
 // 运行：node scripts/smoke-host.mjs
 // 退出码：0 全通过；1 有失败。
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { register } from 'node:module'
@@ -373,7 +373,7 @@ function agentWith(events) {
 const assistantEvent = (text, seq = 7) => ({
   type: 'assistant/message',
   seq,
-  // 真实形状（实测自 C:\Users\10933\.dsh\sessions\...\session.v4.jsonl.zstd）：
+  // 真实形状（实测自 <DSH_HOME>\sessions\<会话>\session.v4.jsonl.zstd）：
   // data = { turn, step, message:{role,content,source,id}, usage, stream }
   // 夹具必须照抄现实而不是照抄实现，否则实现读错了字段，测试跟着一起错还全绿。
   data: {
@@ -474,7 +474,7 @@ await test('同一轮内提醒次数到顶就停（防止机制把自己拉成�
   assert.equal(nextTurn.messages.length, 1, '换轮必须重新给配额')
 })
 
-await test('section 名未与 dsh-soul 的 soul:persona 冲突', () => {
+await test('section 名未与同生态插件的 section 名冲突', () => {
   assert.equal(ctx._sections.has('soul:persona'), false)
 })
 
@@ -620,10 +620,10 @@ await test('同时改人设与质检时，标题两种都提到（不能漏掉�
   assert.match(text, /提示词/, '同时要说明还改了别的提示词设定')
 })
 
-await test('人设工具不叫 set_persona（避开 dsh-soul 的重名冲突）', () => {
+await test('人设工具不叫 set_persona（避开同名工具的重名冲突）', () => {
   // dsh-tools 的 NamedEntries 遇重名直接抛错（dsh-tools\lib\index.js:2634），
   // 注册顺序决定谁死。名字撞车 = 两者的工具会静默少一个。
-  assert.equal(ctx._tools.some((t) => t.name === 'set_persona'), false, '不得占用 dsh-soul 的工具名')
+  assert.equal(ctx._tools.some((t) => t.name === 'set_persona'), false, '不得占用同类插件已用的工具名')
 })
 
 await test('人设工具的输出 schema 走 DSL 允许的形态（无根级 required）', () => {
@@ -1121,7 +1121,7 @@ await test('重置带 confirm:true 才生效，且保留用户自建预设', asy
   assert.equal(after.agentName, '', '确认后的重置应清空人设字段')
   assert.ok(
     (after.presets ?? []).some((p) => p.id === customId),
-    '重置必须保留用户自建预设（与 dsh-soul 的 defaultConfigPreservingPersonas 行为对齐）'
+    '重置必须保留用户自建预设（与同类插件的保留语义对齐）'
   )
   // 清理：删掉这条预设、并把人设字段恢复原值 —— 本套件后面的用例
   // （持久化、提示词装配）都假设 agentName 仍是「小沃」。

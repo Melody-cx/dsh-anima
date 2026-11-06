@@ -114,8 +114,6 @@ import {
   MAX_FLAGGED_ITEMS,
   assessPatrol,
   compactFlagged,
-  parsePatrolSignature,
-  patrolSignature,
   planNightlyWake
 } from '../lib/patrol.mjs'
 import { createNoticeMessage, patrolNoticeText } from '../lib/injection.mjs'
@@ -1241,7 +1239,7 @@ test('mergePersona 让工作区覆盖全局', () => {
   assert.equal(sources.language, 'global')
 })
 
-// ==================== 工具确认门槛与光轨（对照 dsh-soul） ====================
+// ==================== 工具确认门槛与光轨（对照同类插件） ====================
 
 await section('config:确认门槛与光轨')
 
@@ -1322,7 +1320,7 @@ async function withTempHome(fn) {
 // 若在 apply 阶段一次性 ctx.get() 拿到 undefined 就固化下来，表现会是
 // 「重启后存储后端无故退化」，而用户的配置读不出来。
 //
-// 现在的契约（与 dsh-checkpoint-rewind 的惰性解析一致 + 记忆化）：
+// 现在的契约（与同生态插件的惰性解析一致 + 记忆化）：
 //   - 不在 apply 阶段解析服务，首次真正使用时才 ctx.get()；
 //   - 服务缺失 ⇒ 抛 StorageUnavailableError('storage-not-composed')，绝不换落盘点；
 //   - 失败**不**记忆化 ⇒ 服务后来就绪时下一次调用能成；
@@ -1479,7 +1477,7 @@ test('未打开后端时 srcKind / srcReason / srcMessage 均为 null，不谎�
 })
 
 // 2026-10-10 的事故回归：resetConfig 当初把 presets 一并清空。
-// 行为与 dsh-soul 的 defaultConfigPreservingPersonas 对齐 —— 预设是用户资产。
+// 行为与同类插件的「重置保留预设」对齐 —— 预设是用户资产。
 test('resetConfig 重置人设字段但保留用户自建预设', async () => {
   await withTempHome(async () => {
     const domain = makeOpenableDomain()

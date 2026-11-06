@@ -2,7 +2,7 @@
 //
 // 为什么需要它：真实包依赖 cordis / schemastery / dsh-scope / dsh-llm 等一堆
 // 宿主内建模块，在没有 DSH 宿主的环境里 import 不进来。装上 profile 后
-// 走的是真实包（与 dsh-soul 同一条解析路径）。
+// 走的是真实包（与同类插件同一条解析路径）。
 //
 // 这个替身只复刻冒烟测试需要用到的部分：TOOL_RUNTIME_SCHEDULER 哨兵 +
 // defineTool 的「参数属性表 → JSON Schema」转换 + 原样返回 execute。

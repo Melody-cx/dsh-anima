@@ -13,13 +13,17 @@
 // 用法：
 //   node scripts/backfill-types.mjs --dry-run            # 只看要改什么，不写
 //   node scripts/backfill-types.mjs --apply              # 真写
-//   node scripts/backfill-types.mjs --apply --url http://127.0.0.1:54537
+//   node scripts/backfill-types.mjs --apply --url http://127.0.0.1:<PORT>
+//
+// --url 必填：宿主每次启动随机分配端口，没有可用的默认值。
 //
 // 退出码：0 = 无事可做或全部成功 / 1 = 有失败项 / 2 = 参数或连接错误
 
 import { request as httpRequest } from 'node:http'
 
-const DEFAULT_URL = 'http://127.0.0.1:54537'
+// 默认地址只在「用户没传 --url」时充当占位提示；端口写死会被规则判成硬编码 URL。
+// 因此默认值留空，由 argOf 在缺省时报出用法错误，而不是悄悄连一个可能不存在的端口。
+const DEFAULT_URL = ''
 
 // 分类依据（写在这里，是因为下一个人改这张表时得知道当初为什么这么分）：
 //   fact       —— 客观可核对、会随时间失效（水平、环境、路径、平台规则）
@@ -60,7 +64,14 @@ function argOf(name, fallback) {
   return at >= 0 ? process.argv[at + 1] ?? fallback : fallback
 }
 
-const url = argOf('--url', DEFAULT_URL).replace(/\/+$/, '')
+const rawUrl = argOf('--url', DEFAULT_URL)
+if (rawUrl === '') {
+  // 不猜端口：猜错会连到别的进程上，把别人的记忆表改了。
+  console.error('用法：node scripts/backfill-types.mjs --url http://127.0.0.1:PORT [--apply]')
+  console.error('（本脚本没有默认地址：宿主每次启动的端口是随机的，写死的默认值只会连错地方。）')
+  process.exit(2)
+}
+const url = rawUrl.replace(/\/+$/, '')
 const dryRun = !process.argv.includes('--apply')
 
 let hostname

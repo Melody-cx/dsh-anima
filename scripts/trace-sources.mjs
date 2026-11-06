@@ -22,15 +22,15 @@
 // 用法：
 //   node scripts/trace-sources.mjs                 # 只看，不写
 //   node scripts/trace-sources.mjs --apply         # 真写进 sourceRef
-//   node scripts/trace-sources.mjs --apply --url http://127.0.0.1:63695
+//   node scripts/trace-sources.mjs --apply --url http://127.0.0.1:PORT
 //
 // 退出码：0 = 全部处理完 / 1 = 有写失败或回读不一致 / 2 = 参数或连接错误
 
 import fs from 'node:fs'
 import path from 'node:path'
-import zlib from 'node:zlib'
 import os from 'node:os'
 import { request as httpRequest } from 'node:http'
+import { readSessionEvents } from './zstd-frames.mjs'
 
 const SESSIONS_ROOT =
   process.env.DSH_SESSIONS_DIR ?? path.join(os.homedir(), '.dsh', 'sessions')
@@ -40,7 +40,15 @@ function argOf(name, fallback) {
   return at >= 0 ? process.argv[at + 1] ?? fallback : fallback
 }
 
-const url = argOf('--url', 'http://127.0.0.1:63695').replace(/\/+$/, '')
+// 不猜端口：宿主每次启动的端口是随机的。写死一个默认值，脚本会安静地连到
+// 上一个或别的进程，然后把那份数据当成当前这次的写进 sourceRef。
+const rawUrl = argOf('--url', '')
+if (rawUrl === '') {
+  console.error('用法：node scripts/trace-sources.mjs [--apply] --url http://127.0.0.1:PORT')
+  console.error('（端口请从宿主启动日志或 Web GUI 地址里取，本脚本不提供默认值。）')
+  process.exit(2)
+}
+const url = rawUrl.replace(/\/+$/, '')
 const apply = process.argv.includes('--apply')
 const verbose = process.argv.includes('--verbose')
 
@@ -84,18 +92,6 @@ async function getJson(pathname, init = {}) {
     throw new Error(`${pathname} HTTP ${payload.status}：${json?.error ?? payload.text.slice(0, 200)}`)
   }
   return json
-}
-
-function* zstdFrames(raw) {
-  const magic = [0x28, 0xb5, 0x2f, 0xfd]
-  let begin = -1
-  for (let i = 0; i + 3 < raw.length; i++) {
-    if (raw[i] === magic[0] && raw[i + 1] === magic[1] && raw[i + 2] === magic[2] && raw[i + 3] === magic[3]) {
-      if (begin >= 0) yield raw.subarray(begin, i)
-      begin = i
-    }
-  }
-  if (begin >= 0) yield raw.subarray(begin)
 }
 
 const squash = (s) => String(s ?? '').replace(/\s+/g, '')
@@ -156,23 +152,8 @@ function spoken(event) {
 }
 
 function readSession(file) {
-  const events = []
-  for (const frame of zstdFrames(fs.readFileSync(file))) {
-    let text
-    try {
-      text = zlib.zstdDecompressSync(frame).toString('utf8')
-    } catch {
-      continue // 半行/坏帧：跳过，不猜
-    }
-    for (const line of text.split('\n')) {
-      const t = line.trim()
-      if (t === '') continue
-      try {
-        events.push(JSON.parse(t))
-      } catch {}
-    }
-  }
-  return events
+  // 分帧与解压见 scripts/zstd-frames.mjs —— 这段逻辑原本在三个脚本里逐字重复。
+  return readSessionEvents(file).events
 }
 
 function listSessions() {

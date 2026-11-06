@@ -23,34 +23,20 @@
 //
 // 用法：node scripts/remind-effect.mjs [会话文件路径]
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import zlib from 'node:zlib'
+import { readSessionEvents } from './zstd-frames.mjs'
 
-const SESSIONS_ROOT = path.join(process.env.USERPROFILE ?? 'C:\\Users\\10933', '.dsh', 'sessions')
-const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd]
+// 会话根目录：优先 DSH_HOME，其次用户主目录下的 .dsh。
+// 原来的兜底写死了开发机上的用户名 —— 在别人机器上触发时会去找一个不存在的目录，
+// 然后安静地报「找不到会话文件」，看起来像「没有会话」，其实是路径错了。
+const DSH_HOME = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
+const SESSIONS_ROOT = path.join(DSH_HOME, 'sessions')
 const QUALITY_MARK = '[dsh-anima 质检]'
 
-/** 会话日志是「每行一个 zstd 帧」，必须按魔数切帧逐帧解压。 */
+/** 会话日志是「每行一个 zstd 帧」，分帧解压见 scripts/zstd-frames.mjs（三处共用）。 */
 function readEvents(file) {
-  const raw = fs.readFileSync(file)
-  const starts = []
-  for (let i = 0; i + 4 <= raw.length; i += 1) {
-    if (raw[i] === ZSTD_MAGIC[0] && raw[i + 1] === ZSTD_MAGIC[1]
-      && raw[i + 2] === ZSTD_MAGIC[2] && raw[i + 3] === ZSTD_MAGIC[3]) starts.push(i)
-  }
-  const events = []
-  for (let k = 0; k < starts.length; k += 1) {
-    const begin = starts[k]
-    const end = k + 1 < starts.length ? starts[k + 1] : raw.length
-    let text
-    try { text = zlib.zstdDecompressSync(raw.subarray(begin, end)).toString('utf8') } catch { continue }
-    for (const line of text.split('\n')) {
-      const t = line.trim()
-      if (!t) continue
-      try { events.push(JSON.parse(t)) } catch { /* 半行 */ }
-    }
-  }
-  return events
+  return readSessionEvents(file).events
 }
 
 function findLatestSession() {
