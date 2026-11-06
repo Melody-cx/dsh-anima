@@ -6,6 +6,13 @@
   "type": "module",
   "main": "./index.mjs",
   "license": "MIT",
+  "scripts": {
+    "verify": "node scripts/verify-core.mjs",
+    "smoke": "node scripts/smoke-host.mjs && node scripts/smoke-client.mjs",
+    "acceptance": "node scripts/acceptance.mjs",
+    "review": "node scripts/review.mjs",
+    "check": "node scripts/verify-core.mjs && node scripts/smoke-host.mjs && node scripts/smoke-client.mjs && node scripts/check-client-i18n.mjs"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
