@@ -1001,6 +1001,7 @@ async function runRetrospect(ctx, { reason = 'manual' } = {}) {
         found: null,
         leadKeys: previous?.leadKeys ?? [],
         leads: previous?.leads ?? null,
+        leadsAt: previous?.leadsAt ?? null,
         leadsDropped: previous?.leadsDropped ?? null,
         delivered: 0,
         error
@@ -1059,6 +1060,14 @@ async function runRetrospect(ctx, { reason = 'manual' } = {}) {
   }
 
   if (metaTable) {
+    // 「这一轮找到的线索」什么时候算数，取决于 leadsAt 而不是 scannedAt。
+    //
+    // 早先每次都写 `leads: 新的一批 or null`，于是用户第二次点「回扫一次」
+    // 之后明细被清空 —— 界面上一片安静，读起来像「上次找到的都丢了」。
+    // 而 leadKeys 还在、不会再报，所以那些线索其实并没有消失，只是不再显示。
+    // 现在改成：没有新线索时保留上一批明细与它自己的时间戳，
+    // 界面便能把「这批线索是 3 天前找到的」和「刚扫过、没有新的」分开说。
+    const hasNew = compact.items.length > 0
     await metaTable.put(RETROSPECT_KEY, {
       scannedAt: at,
       scannedDays: days,
@@ -1066,9 +1075,9 @@ async function runRetrospect(ctx, { reason = 'manual' } = {}) {
       messages,
       found: verdict.newLeads.length,
       leadKeys: mergedKeys,
-      // 只保留最近这一批的明细：更早的已经报过，界面上再列一遍只是噪音。
-      leads: compact.items.length > 0 ? compact.items : null,
-      leadsDropped: compact.dropped,
+      leads: hasNew ? compact.items : (previous?.leads ?? null),
+      leadsAt: hasNew ? at : (previous?.leadsAt ?? null),
+      leadsDropped: hasNew ? compact.dropped : (previous?.leadsDropped ?? null),
       delivered,
       error: failedFrames > 0 ? `有 ${failedFrames} 帧解压失败，这部分内容不可见` : undefined
     })

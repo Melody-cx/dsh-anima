@@ -2045,6 +2045,27 @@ await test('复盘：第二轮不重复报同一条线索', async () => {
   assert.equal(first.verdict.newLeads.length, 1, `第一轮应当只捞到这条新的，实际 ${first.verdict.newLeads.length}`)
   assert.equal(second.verdict.shouldReport, false, '同一批线索第二轮不该再报一遍')
   assert.equal(second.verdict.newLeads.length, 0)
+
+  // 第二轮曾把上一批明细清空（旧实现写 `leads: 新的一批 or null`），
+  // 于是用户第二次点「回扫一次」后，界面上原本找到的线索全不见了 ——
+  // 读起来像「上次找到的都丢了」。它们其实还在 leadKeys 里、也不会重报。
+  // 现在没有新线索时保留上一批明细，并单独记 leadsAt 说明它有多旧。
+  const after = (await callRoute(ctx._routes.get('/api/anima/state'))).payload
+  const meta = after.retrospectMeta ?? {}
+  assert.ok(
+    Array.isArray(meta.leads) && meta.leads.length >= 1,
+    `第二轮没有新线索时把上一批明细清空了（实际 leads=${JSON.stringify(meta.leads)}）；`
+    + '用户会以为上次找到的线索丢了'
+  )
+  assert.equal(meta.found, 0, '第二轮本身确实没有新线索，found 应当为 0')
+  assert.ok(
+    typeof meta.leadsAt === 'string' && meta.leadsAt !== '',
+    '保留的明细必须带自己的时间戳（leadsAt），否则界面说不清它有多旧'
+  )
+  assert.notEqual(
+    meta.leadsAt, meta.scannedAt,
+    '这一轮没找到新的，leadsAt 不该等于本轮 scannedAt —— 那会让旧明细看起来像刚扫出来的'
+  )
   await rm(join(fixtureHome, 'sessions', '--fixture2--'), { recursive: true, force: true })
 })
 

@@ -1206,6 +1206,7 @@ window.__ModuleLoader__.load({
       'retrospect.none': '没有新线索',
       'retrospect.found': '新线索 {n} 条',
       'retrospect.details': '这一轮找到的线索（只是线索，不是结论）',
+      'retrospect.leadsOlder': '这批线索是 {t} 那轮找到的；这轮没有新的，所以沿用。',
       'retrospect.moreDropped': '还有 {n} 条没列出',
       'retrospect.error': '这次没扫成：{e}',
       'retrospect.toastFound': '回扫完成：新线索 {n} 条。要不要记由你定。',
@@ -1646,6 +1647,7 @@ window.__ModuleLoader__.load({
       'retrospect.none': 'no new leads',
       'retrospect.found': '{n} new leads',
       'retrospect.details': 'Leads found this round (leads, not conclusions)',
+      'retrospect.leadsOlder': 'These leads came from the round at {t}; this round found none new, so they are kept.',
       'retrospect.moreDropped': '{n} more not listed',
       'retrospect.error': 'This round did not complete: {e}',
       'retrospect.toastFound': 'Rescan done: {n} new leads. Whether to keep any is your call.',
@@ -2958,10 +2960,18 @@ window.__ModuleLoader__.load({
         ? e('div', { className: 'an-hintline' }, t('retrospect.moreDropped').replace('{n}', String(dropped)))
         : null
 
+      // 明细可能来自更早的那一轮（这一轮没有新线索时会被保留下来）。
+      // 不说清它有多旧，用户会以为这是刚才扫出来的。
+      const leadsAt = typeof meta.leadsAt === 'string' ? meta.leadsAt : ''
+      const older = leadsAt && leadsAt !== meta.scannedAt
+        ? e('div', { className: 'an-note' }, t('retrospect.leadsOlder').replace('{t}', shortTime(leadsAt)))
+        : null
+
       let details = null
       if (items.length > 0) {
         details = e('div', { className: 'an-mt4' },
           e('div', { className: 'an-note' }, t('retrospect.details')),
+          older,
           e('div', { className: 'an-list an-mt4' },
             items.map((item) => e('div', { key: item.key, className: 'an-item' },
               e('div', { className: 'an-item-main' },

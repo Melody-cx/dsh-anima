@@ -2514,6 +2514,42 @@ await test('回扫明细：找到的线索要逐条画出来，且只说类型�
   }
 })
 
+await test('回扫明细：没有新线索时沿用的旧明细必须说清是哪一轮找到的', async () => {
+  const saved = STATE_PAYLOAD.retrospectMeta
+  try {
+    // 这一轮刚扫过（scannedAt 新），但没找到新的；明细沿用更早那一批。
+    // 不说清它有多旧，用户会以为屏幕上的线索是刚才扫出来的。
+    STATE_PAYLOAD.retrospectMeta = {
+      scannedAt: '2026-10-24T12:00:00.000Z',
+      scannedDays: 14,
+      files: 9,
+      messages: 210,
+      found: 0,
+      leadKeys: ['k1'],
+      leads: [{ key: 'k1', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' }],
+      leadsAt: '2026-10-21T10:00:00.000Z',
+      leadsDropped: 0,
+      delivered: 0
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(text.includes(dict.zh['retrospect.none']), '这一轮没有新线索，必须明说')
+    assert.ok(
+      text.includes('我有没有说过不允许一直往c盘写东西'),
+      '旧明细被丢掉了；既然保留它就该画出来'
+    )
+    assert.ok(
+      text.includes(dict.zh['retrospect.leadsOlder'].split('{t}')[0]),
+      `没有说明这批线索是哪一轮找到的；实际渲染：${text.slice(0, 400)}`
+    )
+  } finally {
+    STATE_PAYLOAD.retrospectMeta = saved
+    await controller.loadState()
+  }
+})
+
 await test('回扫按钮：点了必须真的打到 /api/anima/retrospect，且回执按真实形状读', async () => {
   const before = retrospectCalls.length
   retrospectCalls.length = before

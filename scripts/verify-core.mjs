@@ -1614,6 +1614,7 @@ test('meta 表能完整读回 retrospect 记录（含失败轮次的 null 三件
       found: 2,
       leadKeys: ['a', 'b'],
       leads: [{ key: 'a', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' }],
+      leadsAt: '2026-11-08T01:00:00.000Z',
       leadsDropped: 0,
       delivered: 1
     }
@@ -1623,6 +1624,8 @@ test('meta 表能完整读回 retrospect 记录（含失败轮次的 null 三件
     assert.equal(back?.scannedDays, 14)
     assert.equal(back?.files, 18)
     assert.equal(back?.found, 2)
+    // leadsAt 丢了 ⇒ 保留的旧明细会被当成「刚扫出来的」，那正是这次要修的那个歧义。
+    assert.equal(back?.leadsAt, ok.leadsAt, 'leadsAt 丢了 ⇒ 界面说不清明细是哪一轮找到的')
     assert.deepEqual(back?.leadKeys, ['a', 'b'], 'leadKeys 丢了 ⇒ 每轮都把老线索当新的再报一遍')
     assert.equal(back?.leads?.[0]?.kind, 'complaint')
     assert.equal(back?.leads?.[0]?.text, ok.leads[0].text)
@@ -1637,6 +1640,7 @@ test('meta 表能完整读回 retrospect 记录（含失败轮次的 null 三件
       found: null,
       leadKeys: ['a', 'b'],
       leads: null,
+      leadsAt: null,
       leadsDropped: null,
       delivered: 0,
       error: '会话目录不存在：C:/nope'
