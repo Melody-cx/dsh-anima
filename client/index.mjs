@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.0.0'
+    const VERSION = '2.1.0'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────

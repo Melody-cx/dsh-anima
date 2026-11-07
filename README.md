@@ -499,7 +499,7 @@ URL 内嵌凭据等 11 类模式。
 本插件尚未发布到 npm，从仓库直接装：
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
+dsh plugin add github:Melody-cx/dsh-anima#v2.1.0
 ```
 
 或者手工改 profile 的 `package.json`：
@@ -507,13 +507,13 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v2.0.0"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.1.0"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v2.0.0` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
+`#v2.1.0` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
 否则上游的任何改动都会在下次安装时直接进入你的 profile。git 源下载的是**整个仓库 tarball**
 （本仓库很小），首次安装可能比 npm 源慢一些，超时的话重试一次即可。
 
@@ -655,7 +655,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 
 ### 不做任何迁移
 
-本插件**不读任何其它插件或自己旧版本的配置**。它发布过 1.0.0，但 1.0.0 与 2.0.0 的存储格式完全相同
+本插件**不读任何其它插件或自己旧版本的配置**。它发布过 1.0.0，但从 1.0.0 到 2.1.0 的存储格式完全相同
 （`DOMAIN_VERSION` 都是 1，config / memories / meta / audit 四张表的 spec 逐字一致）——
 没有「老用户的介质」需要兼容，所以代码里既没有一次性迁移，也没有存储格式回退。
 这两块曾存在于开发期，都已删除；留着它们的唯一作用是让后人以为有一批需要照顾的存量用户。
@@ -726,7 +726,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 那一刻回调触发，本仓用真 cordis 探针实证过），期间五个 section 返回空串 —— 宁可不注入，也不冒充默认档。
 
 **不做旧数据救援**：`storageDomain` 何时可用取决于装载顺序，同一个人可能早期把配置写进过别的落点。
-而 1.0.0 与 2.0.0 的存储格式相同（`DOMAIN_VERSION` 都是 1，四张表一致），没有需要救援的旧介质 ——
+而从 1.0.0 到 2.1.0 的存储格式相同（`DOMAIN_VERSION` 都是 1，四张表一致），没有需要救援的旧介质 ——
 所以打开域时不做任何导入或归档，只打开自己的域。
 若将来真需要迁移，唯一安全的形状是：**仅在新域 config 记录不存在时**动手，且自己的任何失败都只记 warn，
 绝不外抛（这段代码在打开域的 try 块里，外抛会被包成新域的 `open-failed`，让一个本该正常的插件停摆）。
@@ -739,7 +739,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.0.0
 
 **单一格式戳，无回退**：`storage-json` 的 single 布局在打开时**硬比对**版本戳 ——
 `unit.version !== descriptor.version` 直接抛 `version-mismatch`，没有任何自动迁移。本插件的域版本
-**恒为 1**（`lib/store.mjs` 的 `DOMAIN_VERSION`），只声明一个 spec，不做串行回退：1.0.0 与 2.0.0 的格式戳相同，不存在「老用户的 v2/v3 介质」这种东西需要读。
+**恒为 1**（`lib/store.mjs` 的 `DOMAIN_VERSION`），只声明一个 spec，不做串行回退：1.0.0 到 2.1.0 的格式戳相同，不存在「老用户的 v2/v3 介质」这种东西需要读。
 
 开发期曾有过兼容回退（按 `[v3, v2, v1]` 串行 `open()`，只对 `version-mismatch` 继续试），随未发布的
 v2/v3 格式一起删除。那段代码的教训保留在这里，因为将来升格式时用得上：**`compatibleVersions` 声明了
@@ -748,7 +748,7 @@ v2/v3 格式一起删除。那段代码的教训保留在这里，因为将来�
 且兼容 spec 必须声明**全部四张表** —— `DomainImpl.table()` 对未声明表直接抛错，少一张就会在下一次
 `table('audit')` 时炸。
 
-**两套编号，别混**：插件自己的版本是 `package.json` 的 semver（`2.0.0`，设置页右上角徽标那个），
+**两套编号，别混**：插件自己的版本是 `package.json` 的 semver（`2.1.0`，设置页右上角徽标那个），
 存储格式戳是个位数（当前是 1），两者互不相干。界面上凡出现格式戳的地方一律写「存储格式 vN」，
 凡出现插件版本的地方一律带小数点 —— 混着叫「本版 v3」时用户没法判断哪个数字在说他装的插件旧。
 `lib/config.mjs` 里那个零引用的 `CONFIG_VERSION = 3` 已删除，就是为了不再制造第二个「v3」。
