@@ -476,7 +476,7 @@ The near-duplicate hint deliberately only hints and never merges: auto-merging w
 The plugin is not published to npm yet; install it straight from the repository:
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v2.1.0
+dsh plugin add github:Melody-cx/dsh-anima#v2.1.1
 ```
 
 Or edit the profile's `package.json` by hand:
@@ -484,13 +484,13 @@ Or edit the profile's `package.json` by hand:
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v2.1.0"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.1.1"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v2.1.0` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
+`#v2.1.1` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
 otherwise any upstream change lands in your profile on the next install. A git source downloads the
 **whole repository tarball** (this one is small), so the first install may be slower than an npm source;
 retry once if it times out.
@@ -645,7 +645,7 @@ the second is a tab switch, which must keep the tree or every unsaved form value
 
 ### No migrations at all
 
-This plugin **reads no config belonging to another plugin, nor to an earlier version of itself**. It released 1.0.0, and every release from 1.0.0 through 2.1.0 uses exactly the same storage format (`DOMAIN_VERSION` is 1 in both, with identical specs for the config / memories / meta / audit tables) — there is no "existing user's medium" to stay compatible with, so the code carries neither one-shot migrations nor storage-format fallback. Both existed during development and were deleted; the only thing keeping them would achieve is making later readers believe a population of legacy users exists.
+This plugin **reads no config belonging to another plugin, nor to an earlier version of itself**. It released 1.0.0, and every release from 1.0.0 through 2.1.1 uses exactly the same storage format (`DOMAIN_VERSION` is 1 in both, with identical specs for the config / memories / meta / audit tables) — there is no "existing user's medium" to stay compatible with, so the code carries neither one-shot migrations nor storage-format fallback. Both existed during development and were deleted; the only thing keeping them would achieve is making later readers believe a population of legacy users exists.
 
 If a storage format bump ever becomes necessary: change only `DOMAIN_VERSION` in `lib/store.mjs`, and **decide first what happens to existing users' media** — that decision must not be improvised after release, because by then the media is already on their machines. For the shape of such a solution, see `某同生态插件` in the same ecosystem (dual-spec serial fallback).
 
@@ -702,7 +702,7 @@ failures are **not** memoised (so a later call succeeds once the service becomes
 When `index.mjs`'s `apply` hits it on the first `reload()`, it attaches cordis' native readiness signal
 `ctx.inject(['storageDomain'], …)` and retries after the service is provided (while a dependency is not ready the fiber stays PENDING, and the callback fires the moment the service is provided — verified in this repository with a real cordis probe). During that window the five sections return an empty string — better not to inject at all than to impersonate the default level.
 
-**No old-data rescue**: when `storageDomain` becomes available depends on load order, so the same person may have written config to a different landing spot in the early days. But every release from 1.0.0 through 2.1.0 shares the same storage format (DOMAIN_VERSION is 1, the same four tables), so there is no orphaned medium to rescue — so opening the domain imports nothing and archives nothing; it just opens its own domain. If a migration ever does become necessary, the only safe shape is: act **only when the new domain has no `config` record**, and let every failure inside it be a `warn` rather than a throw (this code sits inside the domain-open `try`, so a throw would be wrapped as the *new* domain's `open-failed` and stall a plugin that should work fine).
+**No old-data rescue**: when `storageDomain` becomes available depends on load order, so the same person may have written config to a different landing spot in the early days. But every release from 1.0.0 through 2.1.1 shares the same storage format (DOMAIN_VERSION is 1, the same four tables), so there is no orphaned medium to rescue — so opening the domain imports nothing and archives nothing; it just opens its own domain. If a migration ever does become necessary, the only safe shape is: act **only when the new domain has no `config` record**, and let every failure inside it be a `warn` rather than a throw (this code sits inside the domain-open `try`, so a throw would be wrapped as the *new* domain's `open-failed` and stall a plugin that should work fine).
 
 **The unavailability reason is inspectable**: the `source` section of `GET /api/anima/state` carries `reason` (an error code) and `message` (the raw error),
 with values `storage-not-composed` / `vocabulary-unavailable` / `open-failed: <raw error>`;
@@ -712,7 +712,7 @@ When storage is unavailable that route returns **503 + `code`** rather than an e
 
 **A single format stamp, with no fallback**: the `single` layout of `storage-json` **hard-compares** the version stamp when opening —
 `unit.version !== descriptor.version` throws `version-mismatch` outright, with no automatic migration whatsoever. This plugin's domain version is **always 1**
-(`DOMAIN_VERSION` in `lib/store.mjs`) and declares exactly one spec with no serial fallback: 1.0.0 through 2.1.0 carry the same format stamp, so there is no such thing as
+(`DOMAIN_VERSION` in `lib/store.mjs`) and declares exactly one spec with no serial fallback: 1.0.0 through 2.1.1 carry the same format stamp, so there is no such thing as
 "an existing user's v2/v3 medium" to read.
 
 During development there was a compatibility fallback (`open()` attempted **serially** over `[v3, v2, v1]`, continuing only on `version-mismatch`);
@@ -722,12 +722,12 @@ it was deleted together with the unreleased v2/v3 formats. The lesson from that 
 and the tolerant spec must declare **all four tables** — `DomainImpl.table()` throws outright for an undeclared table, and missing one blows up at the next
 `table('audit')` call.
 
-**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.1.0`, the badge in the top-right of the settings page);
+**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.1.1`, the badge in the top-right of the settings page);
 the storage format stamp is a single digit (currently 1). The two are unrelated. Wherever the format stamp appears in the UI it is written "storage format vN",
 and wherever the plugin version appears it carries a decimal point — mixing them as "this build's v3" leaves the user unable to tell which number means their
 installed plugin is out of date. The zero-reference `CONFIG_VERSION = 3` in `lib/config.mjs` was deleted for exactly that reason: to avoid manufacturing a second "v3".
 
-**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.1.0`, the badge in the settings page header), while the storage format stamp is a single digit (1 / 2 / 3). The two are unrelated. Everywhere the format stamp appears the UI says "storage format vN", and everywhere the plugin version appears it carries a decimal point — mixing them as "this build is v3" leaves the user unable to tell which number is telling them their plugin is old. The unreferenced `CONFIG_VERSION = 3` in `lib/config.mjs` was removed precisely so a second "v3" is not manufactured.
+**Two numbering schemes — do not confuse them**: the plugin's own version is the semver in `package.json` (`2.1.1`, the badge in the settings page header), while the storage format stamp is a single digit (1 / 2 / 3). The two are unrelated. Everywhere the format stamp appears the UI says "storage format vN", and everywhere the plugin version appears it carries a decimal point — mixing them as "this build is v3" leaves the user unable to tell which number is telling them their plugin is old. The unreferenced `CONFIG_VERSION = 3` in `lib/config.mjs` was removed precisely so a second "v3" is not manufactured.
 
 ## Prompt sections
 
