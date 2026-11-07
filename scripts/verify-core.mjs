@@ -724,6 +724,35 @@ test('index.mjs 注册的五个 section 全部带 interpolate:false', () => {
   }
 })
 
+test('index.mjs 的夜间定时与启动补跑里，回扫有自己的开关读取点', () => {
+  // 源码级断言。守的是一条已经被踩过的坑：回扫最初写在 nightlyTriage 分支里，
+  // 于是「关掉巡夜」会连带让回扫永远不跑 —— 而用户在设置页明明单独打开了回扫。
+  // 这种「开关没有自己的读取点」的 bug 在行为测试里看不出来（默认两者都开），
+  // 只有数源码里的读取点才拦得住。
+  const source = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8')
+
+  const scannedTodayUses = source.match(/retrospectScannedToday\(/g) ?? []
+  assert.ok(
+    scannedTodayUses.length >= 3,
+    `retrospectScannedToday 应至少有 1 处定义 + 2 处调用（夜间 + 补跑），实际 ${scannedTodayUses.length}`
+  )
+
+  // 两处的写法不同：夜间定时作用域里 config 已是 memory 段（`config.retrospectEnabled`），
+  // 启动补跑作用域里拿的是整份 config（`config.memory.retrospectEnabled`）。两种都要认。
+  const ownGates = source.match(/if \(config\.(?:memory\.)?retrospectEnabled\)/g) ?? []
+  assert.ok(
+    ownGates.length >= 2,
+    `回扫应有两处独立开关判定（夜间定时、启动补跑），实际 ${ownGates.length}`
+  )
+
+  // 反向保护：夜里那个函数不能还是「memory.enabled && nightlyTriage」的老形状。
+  // 老形状的特征是同一行里同时出现 enabled 与 nightlyTriage 的 && 判断。
+  assert.ok(
+    !/runtime.config.memory.enabled && runtime.config.memory.nightlyTriage/.test(source),
+    '夜间定时里不该再把 nightlyTriage 与 enabled 串成一串 —— 那会连带停掉回扫'
+  )
+})
+
 test('safeSection：渲染抛错时返回空串，不把异常带出去', () => {
   // 这条守的是一条会「带走整个回合」的边界：宿主 assemble()/renderPrompt()
   // 全程没有 try/catch，我们的 text 函数抛一次，那一轮请求就直接失败。
@@ -1569,6 +1598,76 @@ function makeValidatingDomain() {
     }
   }
 }
+
+test('meta 表能完整读回 retrospect 记录（含失败轮次的 null 三件套）', async () => {
+  await withTempHome(async () => {
+    const domain = makeValidatingDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+    const table = await store.table('meta')
+
+    const ok = {
+      scannedAt: '2026-11-08T01:00:00.000Z',
+      scannedDays: 14,
+      files: 18,
+      messages: 593,
+      found: 2,
+      leadKeys: ['a', 'b'],
+      leads: [{ key: 'a', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' }],
+      leadsDropped: 0,
+      delivered: 1
+    }
+    await table.put('retrospect', ok)
+    const back = table.get('retrospect')
+    assert.equal(back?.scannedAt, ok.scannedAt, 'scannedAt 丢了 ⇒ 分不清「没扫」和「扫过没事」')
+    assert.equal(back?.scannedDays, 14)
+    assert.equal(back?.files, 18)
+    assert.equal(back?.found, 2)
+    assert.deepEqual(back?.leadKeys, ['a', 'b'], 'leadKeys 丢了 ⇒ 每轮都把老线索当新的再报一遍')
+    assert.equal(back?.leads?.[0]?.kind, 'complaint')
+    assert.equal(back?.leads?.[0]?.text, ok.leads[0].text)
+
+    // 失败轮次：三个计数未知，必须是 null。写成 0 就成了「扫了 0 个会话、0 条发言」，
+    // 与「扫过没事」长得一模一样 —— 这条断言就是那次 bug 的防线。
+    await table.put('retrospect', {
+      scannedAt: '2026-11-08T01:05:00.000Z',
+      scannedDays: 14,
+      files: null,
+      messages: null,
+      found: null,
+      leadKeys: ['a', 'b'],
+      leads: null,
+      leadsDropped: null,
+      delivered: 0,
+      error: '会话目录不存在：C:/nope'
+    })
+    const failed = table.get('retrospect')
+    assert.equal(failed?.files, null, '失败时的 files 必须是 null，写成 0 会伪装成「扫了 0 个」')
+    assert.equal(failed?.messages, null)
+    assert.equal(failed?.found, null)
+    assert.equal(failed?.delivered, 0)
+    assert.match(String(failed?.error), /会话目录不存在/)
+    assert.deepEqual(failed?.leadKeys, ['a', 'b'], '失败轮次也必须留住已报过的键，否则下一轮全当新的')
+  })
+})
+
+test('config 表能完整读回 retrospect 两个开关（schema 少一个键 = 设置页保存成功但读回是默认值）', async () => {
+  await withTempHome(async () => {
+    const domain = makeValidatingDomain()
+    const store = new StateStore(makeWaitCtx({ services: { storageDomain: domain } }), { warn: () => {} })
+    await store.getConfig()
+
+    const { changed } = await store.updateConfig({ memory: { retrospectEnabled: true, retrospectDays: 30 } })
+    assert.ok(changed.includes('memory.retrospectEnabled'), 'changed 里应记下这一项，否则审计日志看不出改过')
+    assert.ok(changed.includes('memory.retrospectDays'))
+
+    // 关键：走一遍「读回即校验」。configSchema.memory 少了这两个键时，
+    // 这里会读回 false / 14（默认值），而 PUT 明明返回了 200。
+    const config = await store.getConfig()
+    assert.equal(config.memory.retrospectEnabled, true, '读回是 false ⇒ zod 把未声明的键剥掉了（2026-10-24 同款 bug）')
+    assert.equal(config.memory.retrospectDays, 30, '读回是默认值 ⇒ 同上')
+  })
+})
 
 test('meta 表能完整读回 patrol 记录（schema 少一个键 = 巡夜每次都当成头一回）', async () => {
   await withTempHome(async () => {

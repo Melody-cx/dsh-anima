@@ -404,7 +404,9 @@ So this goes the other way: **do not touch the live conversation, go back over o
 
 `/anima retrospect` (`/anima 复盘`, `POST /api/anima/retrospect`, or the "Run a retrospect" button in the settings page)
 scans the session logs of the last `memory.retrospectDays` days (default 14, range 1–365) and picks out sentences where
-you were correcting, complaining, explicitly asking it to remember, or stating a prohibition:
+you were correcting, complaining, explicitly asking it to remember, or stating a prohibition. Once the switch is on it
+also runs with the **nightly timer** and the **startup catch-up**, gated by its own switch and date (turning patrol off
+does not stop it):
 
 | Kind | What it looks for | Measured over 925 messages here |
 |---|---|---|

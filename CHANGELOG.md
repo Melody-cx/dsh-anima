@@ -18,7 +18,7 @@
   三条硬规矩：只产线索不写记忆库、无论有没有线索都写一条 `meta.retrospect`、
   默认关闭（它要读磁盘会话日志，是新开的口子）。
   入口四个：`/anima 复盘`、`POST /api/anima/retrospect`、设置页「回扫一次」按钮、
-  `/api/anima/state` 的 `retrospectMeta` 下发。
+  `/api/anima/state` 的 `retrospectMeta` 下发；打开开关后还会随夜间定时与启动补跑自动跑。
 - 新配置项 `memory.retrospectEnabled`（默认 `false`）与 `memory.retrospectDays`（默认 14，区间 1–365）。
   默认关闭的理由与开关必须真有读取点：关着时接口明确回「已关闭」且**不写任何记录** ——
   「被关掉」和「跑了没成」混进同一条记录，以后看到「上次回扫失败」会以为坏了。
@@ -36,12 +36,19 @@
 - `lib/store.mjs` 的 `configSchema.memory` 补上 `retrospectEnabled` / `retrospectDays`。
   缺这两个字段不会报错，而是**设置页保存成功、刷新后又变回关闭** —— zod 读回时把它们静默剥掉，
   写入路径却照落盘，于是 POST 返回 200 而 GET 读不到。与 2026-10-24 那次 `metaSchema` 是同一形状。
-- `metaSchema` 的 `files` / `messages` / `found` 允许 `null`。回扫失败的轮次这三个值**未知**，
-  写成 0 就变成「扫了 0 个会话、0 条发言、0 条线索」，与「扫过没事」长得一模一样。
+- `metaSchema` 的 `files` / `messages` / `found` / `leadsDropped` 允许 `null`。回扫失败的轮次
+  这几个值**未知**，写成 0 就变成「扫了 0 个会话、0 条发言、0 条线索」，
+  与「扫过没事」长得一模一样。
+
+### 变更（定时）
+
+- 回扫接进**夜间定时**与**启动补跑**，与巡夜各自判自己的开关和日期。
+  曾经把它写在 `nightlyTriage` 分支里 —— 「关掉巡夜」会连带让回扫永远不跑，
+  而设置页里回扫是单开的。`verify-core` 加了一条源码级断言守住「回扫有自己的开关读取点」。
 
 ### 验证
 
-`verify-core` 234 → **248**、`smoke-host` 103 → **111**、`smoke-client` 69 → **73**、
+`verify-core` 234 → **251**、`smoke-host` 103 → **111**、`smoke-client` 69 → **73**、
 `check-client-i18n` zh 377 → **393** / en 377 → **393**，四套全绿。
 
 ---

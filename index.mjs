@@ -683,6 +683,21 @@ const QUALITY_STATS_KEY = 'qualityStats'
 /** meta 表里存回扫记录的键。与 triage / patrol / qualityStats 同级，靠键区分形状。 */
 const RETROSPECT_KEY = 'retrospect'
 
+/**
+ * 回扫是否「今天已经扫过」。
+ *
+ * 判据只看 meta.retrospect 自己的 scannedAt，不看 meta.triage 的 lastTriageDay ——
+ * 两者是独立的动作，用巡夜的日期去挡回扫，会出现「巡夜今天跑过了，回扫就被跳过」。
+ * 还没扫过（没有记录）时返回 false，即「该扫」。
+ */
+function retrospectScannedToday(meta) {
+  const at = meta?.scannedAt
+  if (typeof at !== 'string' || at === '') return false
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return false
+  return dayKey(d) === dayKey()
+}
+
 /** 两次落盘之间的最小间隔（毫秒）。pre-step 每步都跑，不节流等于把磁盘当计数器用。 */
 const QUALITY_STATS_FLUSH_MS = 10_000
 
@@ -1144,25 +1159,38 @@ function scheduleNightly(ctx, state) {
     const plan = planNightlyWake({ now: new Date(), hour })
     state.timer = setTimeout(async () => {
       try {
-        if (runtime.config.memory.enabled && runtime.config.memory.nightlyTriage) {
-          if (!plan.isTarget) {
-            // 中途醒来只为重新定闹钟。这里**不能**跑巡夜：否则「几点跑巡夜」
-            // 会由「开机补跑有没有成功」决定，而不是由 nightlyHour 决定
-            // （m06351 实测到的就是这个）。
-            return
-          }
-          // 再核一次小时。`isTarget` 是挂闹钟时算的，而 setTimeout 在机器休眠、
-          // 系统改时间、长时间挂起之后可能拖到别的钟点才回调；这时候光信
-          // isTarget 就会在上班时间跑一遍「夜间巡夜」。
-          const nowHour = new Date().getHours()
-          if (nowHour !== hour) {
-            warn(ctx, `巡夜跳过：闹钟落在 ${nowHour} 点，不是设定的 ${hour} 点`)
-            return
-          }
+        const config = runtime.config.memory
+        if (!config.enabled) return
+        if (!plan.isTarget) {
+          // 中途醒来只为重新定闹钟。这里**不能**跑巡夜：否则「几点跑巡夜」
+          // 会由「开机补跑有没有成功」决定，而不是由 nightlyHour 决定
+          // （m06351 实测到的就是这个）。
+          return
+        }
+        // 再核一次小时。`isTarget` 是挂闹钟时算的，而 setTimeout 在机器休眠、
+        // 系统改时间、长时间挂起之后可能拖到别的钟点才回调；这时候光信
+        // isTarget 就会在上班时间跑一遍「夜间巡夜」。
+        const nowHour = new Date().getHours()
+        if (nowHour !== hour) {
+          warn(ctx, `巡夜跳过：闹钟落在 ${nowHour} 点，不是设定的 ${hour} 点`)
+          return
+        }
+        // 巡夜与回扫是**两个开关、两种动作**，各自判各自的日期，也各自判自己的开关。
+        // 曾经把回扫写在 nightlyTriage 的分支里 —— 结果「关掉巡夜」会连带让回扫
+        // 永远不跑，而用户在设置页明明单独打开了回扫。开关必须有它自己的读取点。
+        if (config.nightlyTriage) {
           const last = await state.lastTriageDay()
           // 到点就跑巡夜，不再只跑整理：整理是巡夜的一部分，汇报与否由
           // runPatrol 依据「有没有新的事」机械判定（见 lib/patrol.mjs）。
           if (last !== dayKey()) await runPatrol(ctx, { reason: 'nightly' })
+        }
+        // 回扫排在巡夜之后：它的线索多半来自「今天用户的纠正」，晚一点扫才能
+        // 把当天的话也吃进去。
+        if (config.retrospectEnabled) {
+          const retroMeta = (await runtime.store?.table?.('meta'))?.get(RETROSPECT_KEY)
+          if (!retrospectScannedToday(retroMeta)) {
+            await runRetrospect(ctx, { reason: 'nightly' })
+          }
         }
       } catch (err) {
         warn(ctx, `每晚巡夜失败：${String(err?.message || err)}`)
@@ -2987,10 +3015,22 @@ export async function apply(ctx) {
         // 真正就绪后会由 ctx.inject 的 retry 走一次 reload，后续整点仍按 nightlyHour 触发。
         if (!runtime.loaded) return
         const config = await store.getConfig()
-        if (!config.memory.enabled || !config.memory.nightlyTriage) return
-        const last = await state.lastTriageDay()
-        if (last !== dayKey()) {
-          await runPatrol(ctx, { reason: 'catch-up' })
+        if (!config.memory.enabled) return
+        // 巡夜与回扫各自判各自的开关与日期。曾经这里是一个 `||` 直接 return ——
+        // 那个写法让「关掉巡夜」连带停掉回扫的补跑，而回扫在设置里是单开的。
+        if (config.memory.nightlyTriage) {
+          const last = await state.lastTriageDay()
+          if (last !== dayKey()) {
+            await runPatrol(ctx, { reason: 'catch-up' })
+          }
+        }
+        // 回扫的补跑单独判日期。缺了这一段，只有巡夜会补跑、回扫会一直等到
+        // 下一个整点 —— 而这类用户往往开机就没有整点（休眠/关机是常态）。
+        if (config.memory.retrospectEnabled) {
+          const retroMeta = (await store.table?.('meta'))?.get(RETROSPECT_KEY)
+          if (!retrospectScannedToday(retroMeta)) {
+            await runRetrospect(ctx, { reason: 'catch-up' })
+          }
         }
       } catch (err) {
         warn(ctx, `启动补跑巡夜失败：${String(err?.message || err)}`)
