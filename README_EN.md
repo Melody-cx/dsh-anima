@@ -392,6 +392,43 @@ The report text itself carries three hard requirements (`patrolNoticeText`): lis
 reported** this time, and give an exit you can recompute yourself (`GET /api/anima/memory/audit` or the checkup
 button in the settings page).
 
+## Retrospective review: going back over old sessions
+
+The worst memory failure is not "it remembered something wrong", it is **"it never wrote it down in the first place"** —
+you said something three days ago and today it repeats the same mistake, so you have to complain all over again.
+That cannot be fixed by watching every turn: measured over 925 real user messages and 937 turns on this machine, the
+cheapest resident gate (a two-stage funnel) matched only 4 items (0.4%) on its first stage, while its scoring stage sent
+44.6% of all turns to review — either too strict or too loose, with no usable setting in between.
+
+So this goes the other way: **do not touch the live conversation, go back over old sessions.**
+
+`/anima retrospect` (`/anima 复盘`, `POST /api/anima/retrospect`, or the "Run a retrospect" button in the settings page)
+scans the session logs of the last `memory.retrospectDays` days (default 14, range 1–365) and picks out sentences where
+you were correcting, complaining, explicitly asking it to remember, or stating a prohibition:
+
+| Kind | What it looks for | Measured over 925 messages here |
+|---|---|---|
+| `complaint` | "I said this before / have I not said" — you are already angry, so something was not remembered | 2 (0.2%) |
+| `explicit` | "remember this / don't forget" (English or Chinese) | 1 (0.1%) |
+| `correction` | "wrong / you got it backwards / who told you to / what I said was", excluding "I clicked wrong" | 6 (0.6%) |
+| `constraint` | "never / must not … always / every / all" — negated long-term constraints | 2 (0.2%) |
+
+On the final 593 real messages this yields **9 leads, each with a traceable origin** (which session file, which event),
+and a full scan of 53 sessions takes about 3 seconds (slowest single file 711ms).
+
+Three hard rules:
+
+1. **It only produces leads, it never writes to the memory store.** Not one character — that would be words you never said.
+ Whether to record it, and as fact or stance, is your call in the pending area.
+2. **Whether or not there are leads, it writes a `meta.retrospect` row.** Same discipline as the patrol: reporting only
+ when there is news would make "silent" mean both "scanned, nothing found" and "never scanned". `/api/anima/state`
+ exposes it as `retrospectMeta`; on a failed run `files` is `null` rather than `0` — writing 0 would claim "scanned 0
+ sessions", which looks exactly like "scanned and found nothing".
+3. **Disabled by default.** It reads session logs on disk, which is a new opening, so it defaults to `false` and is turned
+ on in Settings → 灵台. While disabled the endpoint says plainly that it is off and writes no record — "you turned it
+ off" and "it ran and failed" are two different facts, and merging them would later make you read "last retrospect
+ failed" and think something broke.
+
 ## Credential gate
 
 Any content matching a credential pattern is **rejected before it enters the buffer** (never written to disk, leaving no trace), covering 11 pattern classes including private-key blocks, OpenAI/AWS/GitHub tokens, generic api_key / secret / password assignments, Bearer tokens, and credentials embedded in URLs.
@@ -704,7 +741,7 @@ Deliberately placed before `PLAN_POLICY` (500): persona is "who I am", and it sh
 
 ## Commands and tools
 
-- `/anima [show|pending|adopt <id>|discard <id>|mark <id> type=… state=…|triage|patrol|checkup|audit|name <名字>|enable|disable|set <key>=<value>|confirm|reject|reset]`
+- `/anima [show|pending|adopt <id>|discard <id>|mark <id> type=… state=…|triage|patrol|retrospect|checkup|audit|name <名字>|enable|disable|set <key>=<value>|confirm|reject|reset]`
 - Tool `remember(text, note?, scope?, type?, sourceRef?, verifyAt?)` — delivers a candidate to the pending buffer
 - Tool `set_assistant_persona(...)` — lets the model change the assistant persona; with "tool confirmation" enabled it only records a proposal,
   which takes effect only after the user runs `/anima confirm` or clicks "Confirm" in the settings page
@@ -717,9 +754,11 @@ Four commands are easy to confuse; they are distinguished by **what they inspect
 | `/anima audit` (`/anima 检查`) | Whether **my last answer** broke any of the twelve rules |
 | `/anima checkup` (`/anima 体检`) | Whether **what has been recorded** still holds (paths / review dates) |
 | `/anima patrol` (`/anima 巡夜`) | Runs a full patrol and states on the spot why it stayed silent or what it reported |
+| `/anima retrospect` (`/anima 复盘`) | **Scans old sessions** for things you said that were never written down |
 
-The first two inspect "what I said"; the third inspects "the data in the store"; the fourth decides whether to report to you.
-The first three change no state at all; a patrol does run triage (it may touch the buffer) but never makes a decision for you.
+The first two inspect "what I said"; the third inspects "the data in the store"; the fourth decides whether to report to you;
+the fifth looks back at old sessions and only produces leads. The first three change no state at all; a patrol does run triage
+(it may touch the buffer), a retrospect reads session logs on disk, but neither ever makes a decision for you.
 
 `/anima show` is a read-only diagnostic command: **when the storage stack is not composed, it is precisely the command that most needs to work** — it is how the user learns
 "the plugin is here, it's storage that isn't connected", so it tolerates load failure and prints the reason together with the "the above are built-in defaults" notice.

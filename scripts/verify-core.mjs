@@ -117,6 +117,17 @@ import {
   planNightlyWake
 } from '../lib/patrol.mjs'
 import { createNoticeMessage, patrolNoticeText } from '../lib/injection.mjs'
+import {
+  LEAD_KINDS,
+  assessRetrospect,
+  classifySentence,
+  compactLeads,
+  extractLeads,
+  isRealUserText,
+  leadKey,
+  retrospectNoticeText,
+  splitSentences
+} from '../lib/retrospect.mjs'
 
 let passed = 0
 const failures = []
@@ -2844,6 +2855,141 @@ test('候选超过 5 条时截断并说明还有多少，不能静默丢', () =>
   assert.ok(text.includes('- 五'), '前 5 条要列出来')
   assert.ok(!text.includes('- 六'), '第 6 条不该列')
   assert.ok(text.includes('还有 2 条'), '截断了就必须说还有多少')
+})
+
+// ==================== retrospect:回扫判据 ====================
+
+await section('retrospect:回扫判据')
+
+test('噪音必须挡在门外：任务板卡片、subagent 任务书、另一个插件的产物都不是用户说的', () => {
+  // 这一组全部来自真实语料（2026-11-08 实测 53 个会话）。
+  // 不过滤的话，线索表里会混进「你的任务：…」这种我写给自己的话 ——
+  // 实测过滤前 18 条线索，过滤后 9 条，去掉的 9 条全是假的。
+  assert.equal(isRealUserText('只回一行：OK。不要调用任何工具，不要读文件。'), false)
+  assert.equal(isRealUserText('不要调用任何工具，不要读文件', 'user', 'task-board-29385011'), false)
+  assert.equal(isRealUserText('你的任务：把 lib 目录扫一遍'), false)
+  assert.equal(isRealUserText('〔论衡 H2 伦理脱敏〕'), false)
+  assert.equal(isRealUserText('<system-reminder>')  , false)
+  assert.equal(isRealUserText('   '), false)
+  assert.equal(isRealUserText('记住，以后不要往 C 盘写东西'), true, '正常用户发言不能被误杀')
+})
+
+test('插件注入的 source.kind 一律不算用户发言', () => {
+  assert.equal(isRealUserText('后台通知', 'plugin:dsh-anima'), false)
+  assert.equal(isRealUserText('后台通知', 'user'), true)
+})
+
+test('四类判据的优先级是固定的，且只认这四类', () => {
+  assert.deepEqual(LEAD_KINDS, ['complaint', 'explicit', 'correction', 'constraint'])
+  assert.equal(classifySentence('我有没有说过不允许一直往c盘写东西')?.kind, 'complaint')
+  assert.equal(classifySentence('记住，以后都用中文回我')?.kind, 'explicit')
+  assert.equal(classifySentence('我说的是审查能力，不是那个')?.kind, 'correction')
+  assert.equal(classifySentence('不许任何时候往 C 盘写东西')?.kind, 'constraint')
+  assert.equal(classifySentence('今天天气不错'), null, '判不出类就返回 null，不是塞进「其它」桶')
+})
+
+test('「点错了」不是纠正：负向过滤必须挡住它', () => {
+  // 实测踩到过的假阳性：用户说「点错了」表示误操作，不是纠正我的判断。
+  assert.equal(classifySentence('点错了'), null)
+  assert.equal(classifySentence('我点错了这个按钮'), null)
+  assert.equal(classifySentence('你搞错了')?.kind, 'correction', '不带「点/改/按」的「搞错」仍是纠正')
+})
+
+test('分句不能跨中文标点连通两句 —— 否则一条抱怨会拖着无关的下一句一起命中', () => {
+  const sentences = splitSentences('第一句。第二句很短！第三句；第四句')
+  assert.deepEqual(sentences, ['第一句', '第二句很短', '第三句', '第四句'])
+})
+
+test('线索必须带出处：没有 seq 与会话标识的线索无法反查，等于没记', () => {
+  const events = [{
+    type: 'user/message',
+    seq: 42,
+    at: '2026-11-04T10:13:24.360Z',
+    text: '我有没有说过不允许一直往c盘写东西',
+    sourceKind: 'user',
+    rpcId: 'abc'
+  }]
+  const r = extractLeads({ events, sessionRef: 'session-x' })
+  assert.equal(r.leads.length, 1)
+  assert.equal(r.leads[0].seq, 42)
+  assert.equal(r.leads[0].sessionRef, 'session-x')
+  assert.equal(r.leads[0].at, '2026-11-04T10:13:24.360Z')
+})
+
+test('sinceMs 之外的发言不看：回扫窗口要能真正缩窄', () => {
+  const events = [
+    { type: 'user/message', seq: 1, at: '2026-10-01T00:00:00.000Z', text: '记住这条老规则', sourceKind: 'user' },
+    { type: 'user/message', seq: 2, at: '2026-11-07T00:00:00.000Z', text: '记住这条新规则', sourceKind: 'user' }
+  ]
+  const r = extractLeads({ events, sinceMs: Date.parse('2026-11-01T00:00:00.000Z') })
+  assert.equal(r.leads.length, 1)
+  assert.equal(r.leads[0].seq, 2)
+})
+
+test('已报过的线索不重复报 —— 减少也不报，那是用户处理完的结果', () => {
+  const leads = [
+    { kind: 'complaint', text: '我有没有说过不许往C盘写', sessionRef: 's1', seq: 1 },
+    { kind: 'correction', text: '我说的是审查能力', sessionRef: 's1', seq: 2 }
+  ]
+  const first = assessRetrospect({ leads, previousKeys: [] })
+  assert.equal(first.shouldReport, true)
+  assert.equal(first.newLeads.length, 2)
+
+  const second = assessRetrospect({ leads, previousKeys: first.newLeads.map((l) => l.key) })
+  assert.equal(second.shouldReport, false, '原样再扫一遍不该再报')
+  assert.equal(second.newLeads.length, 0)
+
+  const third = assessRetrospect({ leads: [], previousKeys: first.newLeads.map((l) => l.key) })
+  assert.equal(third.shouldReport, false, '线索消失是用户处理完了，不是该汇报的事')
+})
+
+test('同一条线索在不同会话里出现两次只报一次', () => {
+  const leads = [
+    { kind: 'correction', text: '我说的是审查能力', sessionRef: 's1', seq: 1 },
+    { kind: 'correction', text: '我说的是审查能力', sessionRef: 's2', seq: 9 }
+  ]
+  const r = assessRetrospect({ leads, previousKeys: [] })
+  assert.equal(r.newLeads.length, 1)
+})
+
+test('去重键要去掉标点空白 —— 否则同一句话换个标点就算新的', () => {
+  assert.equal(leadKey({ text: '我说的是审查能力。' }), leadKey({ text: '我说的是审查能力' }))
+})
+
+test('落盘形状必须只剩三字段 —— metaSchema 会把不认识的字段剥掉', () => {
+  const leads = [{
+    kind: 'complaint',
+    why: '命中抱怨',
+    text: '我说过多少次不许动C盘',
+    sessionRef: 's1',
+    seq: 7,
+    at: '2026-11-04T00:00:00.000Z',
+    key: 'k1'
+  }]
+  const compact = compactLeads(leads, 30)
+  assert.deepEqual(Object.keys(compact.items[0]).sort(), ['key', 'kind', 'text'])
+  assert.equal(compact.dropped, 0)
+})
+
+test('落盘超上限时如实报告丢了几条，不能静默截断', () => {
+  const leads = Array.from({ length: 5 }, (_, i) => ({ kind: 'fact', text: `线索 ${i}`, key: `k${i}` }))
+  const compact = compactLeads(leads, 3)
+  assert.equal(compact.items.length, 3)
+  assert.equal(compact.dropped, 2)
+})
+
+test('空线索渲染成空串 —— 空串是「沉默」，不是一条「什么都没找到」的消息', () => {
+  assert.equal(retrospectNoticeText([]), '')
+  assert.equal(retrospectNoticeText(null), '')
+})
+
+test('线索提示必须自己说清「这只是线索」，且给出上限与剩余条数', () => {
+  const leads = Array.from({ length: 10 }, (_, i) => ({ kind: 'correction', text: `第 ${i} 条`, sessionRef: 's1' }))
+  const text = retrospectNoticeText(leads, { maxShown: 8 })
+  assert.ok(text.includes('不是结论'), '必须写明这不是结论，否则用户会以为插件已经替他决定了')
+  assert.ok(text.includes('第 0 条') && text.includes('第 7 条'))
+  assert.ok(!text.includes('第 8 条'), '第 9 条起超出展示上限')
+  assert.ok(text.includes('另有 2 条未列出'), '截断了就必须说还有多少')
 })
 
 // ==================== 注入消息的形状（会话 v4 的准入条件）====================

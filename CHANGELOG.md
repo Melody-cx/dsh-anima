@@ -9,6 +9,43 @@
 
 ---
 
+## [Unreleased]
+
+### 新增
+
+- **回扫式复盘**（`lib/retrospect.mjs`、`lib/sessions.mjs`）：回头扫最近 N 天的会话日志，
+  挑出用户当时在纠正 / 抱怨 / 明说要记 / 明说禁令的句子，产出**带出处的线索**。
+  三条硬规矩：只产线索不写记忆库、无论有没有线索都写一条 `meta.retrospect`、
+  默认关闭（它要读磁盘会话日志，是新开的口子）。
+  入口四个：`/anima 复盘`、`POST /api/anima/retrospect`、设置页「回扫一次」按钮、
+  `/api/anima/state` 的 `retrospectMeta` 下发。
+- 新配置项 `memory.retrospectEnabled`（默认 `false`）与 `memory.retrospectDays`（默认 14，区间 1–365）。
+  默认关闭的理由与开关必须真有读取点：关着时接口明确回「已关闭」且**不写任何记录** ——
+  「被关掉」和「跑了没成」混进同一条记录，以后看到「上次回扫失败」会以为坏了。
+- `scripts/probe-retrospect.mjs`：只读探针，用真实语料复核判据命中率。本机 53 个会话 /
+  593 条真实发言实测产出 9 条线索（complaint 2 / explicit 0 / correction 7 / constraint 0），
+  全量扫描约 3 秒。
+
+### 变更
+
+- `scripts/zstd-frames.mjs` 从实体实现改为对 `lib/sessions.mjs` 的纯 re-export。
+  原因：`package.json` 的 `files` 数组不含 `scripts/`，实现留在那里等于「开发时能跑、装好就坏」。
+
+### 修复
+
+- `lib/store.mjs` 的 `configSchema.memory` 补上 `retrospectEnabled` / `retrospectDays`。
+  缺这两个字段不会报错，而是**设置页保存成功、刷新后又变回关闭** —— zod 读回时把它们静默剥掉，
+  写入路径却照落盘，于是 POST 返回 200 而 GET 读不到。与 2026-10-24 那次 `metaSchema` 是同一形状。
+- `metaSchema` 的 `files` / `messages` / `found` 允许 `null`。回扫失败的轮次这三个值**未知**，
+  写成 0 就变成「扫了 0 个会话、0 条发言、0 条线索」，与「扫过没事」长得一模一样。
+
+### 验证
+
+`verify-core` 234 → **248**、`smoke-host` 103 → **111**、`smoke-client` 69 → **73**、
+`check-client-i18n` zh 377 → **393** / en 377 → **393**，四套全绿。
+
+---
+
 ## [2.0.0] - 2026-11-07
 
 首个完整发布版。1.0.0 是发布前打的标签，只有人设与记忆的骨架；2.0.0 补上了回答质检、

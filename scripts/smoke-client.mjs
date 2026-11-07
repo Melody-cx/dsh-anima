@@ -412,6 +412,19 @@ const STATE_PAYLOAD = {
     facts: { pending: 0, flagged: 0, removed: 0 },
     checked: 21
   },
+  // 回扫记录：与巡夜同理，found=0 是合法且重要的状态（扫过、确实没有新线索）。
+  // 它与「这个字段根本不存在」必须被画成两种样子。
+  retrospectMeta: {
+    scannedAt: '2026-10-24T09:00:00.000Z',
+    scannedDays: 14,
+    files: 3,
+    messages: 128,
+    found: 1,
+    leadKeys: ['k1'],
+    leads: [{ key: 'k1', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' }],
+    leadsDropped: 0,
+    delivered: 1
+  },
   // 一键导入（Phase ②）：面板要用到的提示词与两个上限。缺这个字段时客户端
   // 必须不画入口 —— 那是「老宿主」路径，单列一条用例。
   memoryImport: {
@@ -517,6 +530,8 @@ const fetchCalls = []
 const commitBodies = []
 /** /api/anima/patrol 的请求体（断言「手动巡夜真的打到路由」要靠它）。 */
 const patrolCalls = []
+/** /api/anima/retrospect 的请求体（断言「手动回扫真的打到路由」要靠它）。 */
+const retrospectCalls = []
 let IMPORT_PARSE_FAILS = false
 
 /**
@@ -643,6 +658,21 @@ function patrolPayload() {
   }
 }
 
+function retrospectPayload() {
+  // 形状照抄 runRetrospect 的真实返回：
+  // { ok, at, days, files, messages, verdict:{newLeads,shouldReport,...}, delivered, failedFrames }
+  return {
+    ok: true,
+    at: '2026-10-24T09:00:00.000Z',
+    days: 14,
+    files: 3,
+    messages: 128,
+    verdict: { newLeads: [{ key: 'k1', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' }], shouldReport: true, remaining: 0 },
+    delivered: 1,
+    failedFrames: 0
+  }
+}
+
 async function fakeFetch(input, init) {
   const url = String(input)
   fetchCalls.push({ url, method: init?.method ?? 'GET', body: init?.body })
@@ -675,6 +705,10 @@ async function fakeFetch(input, init) {
     patrolCalls.push(JSON.parse(String(init?.body ?? '{}')))
     // 形状照抄 runPatrol 的真实返回：{ ok, verdict:{shouldReport,signature,reasons,facts}, delivered, at, triage, audit }
     return { ok: true, status: 200, json: async () => patrolPayload() }
+  }
+  if (url.includes('/api/anima/retrospect')) {
+    retrospectCalls.push(JSON.parse(String(init?.body ?? '{}')))
+    return { ok: true, status: 200, json: async () => retrospectPayload() }
   }
   if (url.includes('/api/anima/state')) {
     return { ok: true, status: 200, json: async () => STATE_PAYLOAD }
@@ -2355,6 +2389,149 @@ await test('巡夜按钮：点了必须真的打到 /api/anima/patrol，且回�
   assert.ok(
     toast.includes(dict.zh['patrol.toastSilent']),
     `没汇报时没说清「跑过了但没报」；实际渲染：${toast.slice(0, 300)}`
+  )
+})
+
+// ==================== 回扫式复盘 ====================
+//
+// 这一组存在的理由与巡夜那组同构：**沉默有两种意思**。只报有事的话，
+// 界面上「一片安静」既可能是「扫过、真没有该记的」，也可能是「压根没扫」。
+// 下面每条断言都是在检查这两者有没有被画成两种样子。
+
+await test('回扫记录：从没扫过 ≠ 扫过没线索，两者必须长得不一样', async () => {
+  const saved = STATE_PAYLOAD.retrospectMeta
+  try {
+    STATE_PAYLOAD.retrospectMeta = null
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const none = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(
+      none.includes(dict.zh['retrospect.never']),
+      `没有回扫记录时说成「没有线索」而不是「没扫」；实际渲染：${none.slice(0, 300)}`
+    )
+
+    // 扫过、确实没有新线索：必须出现，且说的是「没有新线索」。
+    STATE_PAYLOAD.retrospectMeta = {
+      scannedAt: '2026-10-24T10:00:00.000Z',
+      scannedDays: 14,
+      files: 12,
+      messages: 340,
+      found: 0,
+      leadKeys: [],
+      leads: null,
+      leadsDropped: 0,
+      delivered: 0
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const ran = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(
+      ran.includes(dict.zh['retrospect.none']),
+      `扫过但没有线索时必须明说「没有新线索」；实际渲染：${ran.slice(0, 300)}`
+    )
+    assert.ok(
+      ran.includes(dict.zh['retrospect.scope'].replace('{d}', '14').replace('{f}', '12')),
+      `没说清这轮扫了哪些范围；实际渲染：${ran.slice(0, 300)}`
+    )
+    assert.ok(!ran.includes(dict.zh['retrospect.never']), '有记录时不该再说「没扫过」')
+  } finally {
+    STATE_PAYLOAD.retrospectMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('回扫记录：没扫成的轮次不许显示成「扫了 0 个会话」', async () => {
+  const saved = STATE_PAYLOAD.retrospectMeta
+  try {
+    // files 为 null = 这轮没扫成（目录不存在 / Node 不支持 zstd）。
+    // 若渲染成 0，用户读到的就是「扫了，没事」—— 正是这机制要消灭的那种谎言。
+    STATE_PAYLOAD.retrospectMeta = {
+      scannedAt: '2026-10-24T11:00:00.000Z',
+      scannedDays: 14,
+      files: null,
+      messages: null,
+      found: null,
+      leadKeys: [],
+      leads: null,
+      delivered: 0,
+      error: '会话目录不存在：D:\\no-such-dir\\sessions'
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(
+      text.includes('会话目录不存在'),
+      `没扫成却没把原因说出来；实际渲染：${text.slice(0, 400)}`
+    )
+    assert.ok(
+      !text.includes(dict.zh['retrospect.scope'].replace('{d}', '14').replace('{f}', '0')),
+      `把「没扫成」画成了「扫了 0 个会话」；实际渲染：${text.slice(0, 400)}`
+    )
+  } finally {
+    STATE_PAYLOAD.retrospectMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('回扫明细：找到的线索要逐条画出来，且只说类型不下结论', async () => {
+  const saved = STATE_PAYLOAD.retrospectMeta
+  try {
+    STATE_PAYLOAD.retrospectMeta = {
+      scannedAt: '2026-10-24T12:00:00.000Z',
+      scannedDays: 14,
+      files: 5,
+      messages: 200,
+      found: 2,
+      leadKeys: ['k1', 'k2'],
+      leads: [
+        { key: 'k1', kind: 'complaint', text: '我有没有说过不允许一直往c盘写东西' },
+        { key: 'k2', kind: 'correction', text: '我说的是审查能力不是你理解的' }
+      ],
+      leadsDropped: 7,
+      delivered: 1
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+    const text = allText(cardNodes(lastTree, dict.zh['mem.title'], 'mem'))
+    assert.ok(text.includes('我有没有说过不允许一直往c盘写东西'), '线索正文没画出来')
+    assert.ok(text.includes('我说的是审查能力不是你理解的'), '第二条线索丢了')
+    assert.ok(
+      text.includes(dict.zh['retrospect.moreDropped'].replace('{n}', '7')),
+      `截断了 7 条却没说；实际渲染：${text.slice(0, 400)}`
+    )
+    // 它只是线索，不是结论 —— 文案必须自己承认这一点，不能诱导用户直接采纳。
+    assert.ok(
+      text.includes(dict.zh['retrospect.details']),
+      '没有说明这些只是线索'
+    )
+  } finally {
+    STATE_PAYLOAD.retrospectMeta = saved
+    await controller.loadState()
+  }
+})
+
+await test('回扫按钮：点了必须真的打到 /api/anima/retrospect，且回执按真实形状读', async () => {
+  const before = retrospectCalls.length
+  retrospectCalls.length = before
+  renderFreshSettings()
+  await flush()
+  const card = cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+  const buttons = elements(card, 'button').filter(
+    (node) => allText(walk(node, [])).trim() === dict.zh['retrospect.run']
+  )
+  assert.ok(buttons.length > 0, '没有找到「回扫一次」按钮')
+  buttons[0].props.onClick()
+  await flush()
+  assert.ok(retrospectCalls.length > before, '点了回扫按钮却没有发出请求（入口是死的）')
+  // 有一条新线索时 toast 必须报数，且说清「要不要记由你定」。
+  const toast = allText(walk(lastTree, []))
+  assert.ok(
+    toast.includes(dict.zh['retrospect.toastFound'].replace('{n}', '1')),
+    `找到线索时没报数；实际渲染：${toast.slice(0, 300)}`
   )
 })
 

@@ -1919,6 +1919,176 @@ await test('本机同源请求正常放行', async () => {
   assert.equal(status, 200)
 })
 
+// ==================== 回扫式复盘 ====================
+//
+// 这一组必须自己造会话日志：临时目录里没有 sessions/，真去扫会得到
+// 「会话目录不存在」—— 那样测的是失败路径，不是被测逻辑。
+// 造一份真的 zstd 分帧日志（跟宿主写出来的形状一致），才走得到判据。
+
+const { mkdir, writeFile } = await import('node:fs/promises')
+const { zstdCompressSync } = await import('node:zlib')
+
+/** 按宿主的帧格式写一个会话日志：每行一个事件，每帧一个 zstd 块。 */
+async function writeSessionFixture(home, events) {
+  const dir = join(home, 'sessions', '--fixture--', 'session-0000')
+  await mkdir(dir, { recursive: true })
+  const file = join(dir, 'session.v4.jsonl.zstd')
+  const frame = zstdCompressSync(Buffer.from(events.map((e) => JSON.stringify(e)).join('\n') + '\n'))
+  await writeFile(file, frame)
+  return file
+}
+
+const fixtureHome = await mkdtemp(join(tmpdir(), 'anima-retro-'))
+const prevFixtureHome = process.env.DSH_HOME
+await writeSessionFixture(fixtureHome, [
+  // 真用户发言，应当被捞出来
+  {
+    type: 'user/message',
+    seq: 10,
+    time: Date.parse('2026-11-04T10:13:24.360Z'),
+    data: {
+      content: [{ type: 'text', text: '我有没有说过不允许一直往c盘写东西' }],
+      source: { kind: 'user', rpcId: 'rpc-1' }
+    }
+  },
+  // 任务板下发的卡片：source.kind 也是 user，但不是人说的
+  {
+    type: 'user/message',
+    seq: 11,
+    time: Date.parse('2026-11-04T10:20:00.000Z'),
+    data: {
+      content: [{ type: 'text', text: '不要调用任何工具，不要读文件' }],
+      source: { kind: 'user', rpcId: 'task-board-29385011' }
+    }
+  },
+  // 与第一条同文但换个标点：去重键要能认出来
+  {
+    type: 'user/message',
+    seq: 12,
+    time: Date.parse('2026-11-04T11:00:00.000Z'),
+    data: {
+      content: [{ type: 'text', text: '我有没有说过不允许一直往c盘写东西。' }],
+      source: { kind: 'user', rpcId: 'rpc-2' }
+    }
+  }
+])
+process.env.DSH_HOME = fixtureHome
+
+// 回扫默认是关的（它要读磁盘上的会话日志，不该默认替用户开）。
+// 这组用例要测的是**打开之后**的行为，所以先照用户的路径把它打开 ——
+// 顺便验证了「设置里能打开」这件事本身，而不是绕过闸门直接调内部函数。
+await test('复盘开关：默认关闭时必须明说「关着」，不能装作跑了', async () => {
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })
+  // 状态码跟着 ok 走（与 /api/anima/patrol 同一条约定）：关着就回 400，不回 200。
+  assert.equal(status, 400, '关着却回 200，调用方会以为扫过了')
+  assert.equal(payload.ok, false, '关着却报成功，用户会以为扫过了')
+  assert.match(String(payload.error), /已关闭/, '错误里必须说清是「关了」而不是「坏了」')
+})
+
+await test('复盘开关：设置页能把它打开（否则这个开关就是个装饰）', async () => {
+  const { status } = await callRoute(ctx._routes.get('/api/anima/config'), {
+    method: 'POST',
+    body: { memory: { retrospectEnabled: true, retrospectDays: 14 } }
+  })
+  assert.equal(status, 200, '打开回扫失败')
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  assert.equal(state.payload.config.memory.retrospectEnabled, true, '打开了却没存进去')
+  assert.equal(state.payload.config.memory.retrospectDays, 14)
+})
+
+await test('复盘：真线索捞得出来，噪音与重复句不会混进来', async () => {
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })
+  assert.equal(status, 200, `复盘接口失败：${payload?.error ?? ''}`)
+  assert.equal(payload.ok, true, `复盘失败：${payload?.error ?? ''}`)
+  assert.ok(payload.at, '没写时间就等于没留痕')
+  assert.equal(payload.files, 1, '应当只扫到那 1 个主会话')
+  assert.equal(payload.verdict.newLeads.length, 1, `应当只剩 1 条线索，实际 ${payload.verdict.newLeads.length}`)
+  assert.equal(payload.verdict.newLeads[0].kind, 'complaint')
+  assert.equal(payload.verdict.newLeads[0].seq, 10, '线索必须带得出出处 seq')
+  assert.match(payload.verdict.newLeads[0].sessionRef, /session-0000/, '线索必须带得出会话标识')
+})
+
+await test('复盘留痕：state 下发 retrospectMeta，且字段与这次一致', async () => {
+  const payload = (await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })).payload
+  const state = await callRoute(ctx._routes.get('/api/anima/state'))
+  const meta = state.payload.retrospectMeta
+  assert.ok(meta, 'state 必须下发 retrospectMeta，否则用户无从反查')
+  assert.equal(meta.scannedAt, payload.at, '下发的记录必须就是这次写的那条')
+  assert.equal(meta.scannedDays, 14, '回扫窗口应当就是配置里的默认值')
+  // 「扫了 0 个会话」与「扫了 1 个会话 0 条线索」是两件不同的事。
+  assert.equal(typeof meta.files, 'number', 'files 必须是数字（0 也是数字），不能是 null')
+  assert.equal(typeof meta.messages, 'number')
+  assert.ok(Array.isArray(meta.leadKeys), '已报过的键必须累积，否则下一轮会重复报')
+})
+
+await test('复盘：第二轮不重复报同一条线索', async () => {
+  // 不能靠换 DSH_HOME 造「头一回」：存储栈已经开在那个 home 上，
+  // 换环境变量只影响扫哪个目录，不影响 meta 里已经记过的键。
+  // 所以这里往同一个 home 里再放一条**没报过**的线索，用「只有它算新的」来验去重。
+  const extraDir = join(fixtureHome, 'sessions', '--fixture2--', 'session-0001')
+  await mkdir(extraDir, { recursive: true })
+  await writeFile(
+    join(extraDir, 'session.v4.jsonl.zstd'),
+    zstdCompressSync(Buffer.from(JSON.stringify({
+      type: 'user/message',
+      seq: 20,
+      time: Date.parse('2026-11-05T09:00:00.000Z'),
+      data: {
+        content: [{ type: 'text', text: '我说过多少次不要动我的浏览器' }],
+        source: { kind: 'user', rpcId: 'rpc-3' }
+      }
+    }) + '\n'))
+  )
+  const first = (await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })).payload
+  const second = (await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })).payload
+  assert.equal(first.verdict.shouldReport, true, '前置条件：这条没人报过，第一轮应当算新')
+  assert.equal(first.verdict.newLeads.length, 1, `第一轮应当只捞到这条新的，实际 ${first.verdict.newLeads.length}`)
+  assert.equal(second.verdict.shouldReport, false, '同一批线索第二轮不该再报一遍')
+  assert.equal(second.verdict.newLeads.length, 0)
+  await rm(join(fixtureHome, 'sessions', '--fixture2--'), { recursive: true, force: true })
+})
+
+await test('复盘不写记忆库：它只产线索，裁决必须由用户点', async () => {
+  const before = await callRoute(ctx._routes.get('/api/anima/state'))
+  const strip = (s) => JSON.stringify([s.payload.memories.pending.length, s.payload.memories.adopted.length])
+  const b = strip(before)
+  await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })
+  const after = await callRoute(ctx._routes.get('/api/anima/state'))
+  assert.equal(strip(after), b, '复盘自动写进了记忆库 —— 那是用户没说过的话')
+})
+
+await test('/anima 复盘：命令行能跑，且说清这轮到底有没有提示', async () => {
+  const command = ctx._commands.find((c) => c.name === 'anima')
+  const result = await command.handler({ rawInput: '复盘' })
+  assert.equal(result.kind, 'success', `命令失败：${result.text}`)
+  assert.match(result.text, /复盘完成/)
+  assert.match(result.text, /meta\.retrospect/, '要告诉用户这条记录在哪，否则「可反查」是空话')
+  // 与 /anima patrol 同一条纪律：没出声就要解释为什么没出声。
+  assert.match(result.text, /没有新线索|已提示/, '必须说清这轮到底有没有提示')
+})
+
+await test('复盘：会话目录不存在时如实报错并留痕，不能伪装成「扫过没事」', async () => {
+  const emptyHome = await mkdtemp(join(tmpdir(), 'anima-nosessions-'))
+  process.env.DSH_HOME = emptyHome
+  try {
+    const { payload } = await callRoute(ctx._routes.get('/api/anima/retrospect'), { method: 'POST', body: {} })
+    assert.equal(payload.ok, false, '目录都不存在却报成功，就是在撒谎')
+    assert.match(String(payload.error), /会话目录不存在/, '错误里必须说清是「找不到目录」，而不是含糊的失败')
+    const state = await callRoute(ctx._routes.get('/api/anima/state'))
+    const meta = state.payload.retrospectMeta
+    assert.ok(meta, '失败也必须留痕，否则「没记录」=「没跑」和「跑挂了」混在一起')
+    assert.ok(meta.error, '失败原因必须落盘')
+    assert.equal(meta.delivered, 0)
+    assert.equal(meta.files, null, '没扫成时 files 必须是 null，不能写成 0（那就成了「扫了 0 个」）')
+  } finally {
+    process.env.DSH_HOME = prevFixtureHome
+    await rm(emptyHome, { recursive: true, force: true })
+  }
+})
+
+process.env.DSH_HOME = prevFixtureHome
+await rm(fixtureHome, { recursive: true, force: true })
+
 
 
 // ==================== 存储栈未组合时的降级 ====================

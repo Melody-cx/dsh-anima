@@ -110,6 +110,10 @@ window.__ModuleLoader__.load({
       // 只报有事之后，「没汇报」必须能反查成「真的没事」，否则沉默同时代表
       // 「没事」和「它坏了」—— 这个字段就是那个反查出口。
       patrolMeta: null,
+      // 回扫式复盘的记录（最近一次手动或定时跑的结果，无论有没有线索）。
+      // 与巡夜同一条纪律：它存在的意义就是让「没线索」能被反查成「真的扫过」，
+      // 而不是和「压根没扫」长得一模一样。
+      retrospectMeta: null,
       // 质检钩子的运行计数（宿主内存态，重启清零）。
       // 放在 state 里跟着 /state 一起来，因为它唯一的用途就是让用户一眼区分
       // 「查了、没事」和「根本没查」—— 藏进日志等于要用的时候用不上。
@@ -277,7 +281,11 @@ window.__ModuleLoader__.load({
       // 用户以为自己设了，实际一个字节都没写盘。这类「看得见却存不下」的字段
       // 比没有这个字段更坏。三个地方必须同时有它：默认值、载荷、宿主 schema。
       maxInjectedChars: config?.memory?.maxInjectedChars ?? 4000,
-      notifyOnSessionStart: config?.memory?.notifyOnSessionStart !== false
+      notifyOnSessionStart: config?.memory?.notifyOnSessionStart !== false,
+      // 回扫：默认关（=== true 才开）。两个键必须同时在默认值、载荷、宿主 schema
+      // 里出现，否则就是上面注释说的那种「看得见却存不下」。
+      retrospectEnabled: config?.memory?.retrospectEnabled === true,
+      retrospectDays: config?.memory?.retrospectDays ?? 14
     })
 
     /**
@@ -436,6 +444,7 @@ window.__ModuleLoader__.load({
           // 巡夜记录也用 in 判定：它整体消失时界面必须回到「没跑过」，
           // 而不是继续挂着上一次的「跑过了，没事」——那正是这个项目一直在防的形状。
           if ('patrolMeta' in payload) s.patrolMeta = payload.patrolMeta ?? null
+          if ('retrospectMeta' in payload) s.retrospectMeta = payload.retrospectMeta ?? null
           // 同上，用 in 判定：宿主重启后这个对象整体消失，若用真值判定会把上一轮的
           // 计数一直挂在界面上 —— 那正好是「显示着检查过，其实这轮没检查」。
           if ('qualityStats' in payload) s.qualityStats = payload.qualityStats ?? null
@@ -616,6 +625,22 @@ window.__ModuleLoader__.load({
       async runPatrol() {
         try {
           const payload = await this.request('/api/anima/patrol', { method: 'POST', body: {} })
+          await this.loadState()
+          return payload
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        }
+      }
+
+      /**
+       * 手动跑一次回扫式复盘。
+       *
+       * 与巡夜同样的理由走同一条判据：手动若能绕过「已报过的键不再报」，
+       * 那就永远测不出这一轮到底是不是真新的。
+       */
+      async runRetrospect() {
+        try {
+          const payload = await this.request('/api/anima/retrospect', { method: 'POST', body: {} })
           await this.loadState()
           return payload
         } catch (error) {
@@ -1105,6 +1130,10 @@ window.__ModuleLoader__.load({
       'mem.enabled': '启用记忆层',
       'mem.autoCapture': '自动收集候选',
       'mem.autoCaptureHint': 'AI 觉得该记的事会先存进这里等你点头，不会直接生效。',
+      'mem.retrospect': '回扫式复盘（读旧会话找漏记的）',
+      'mem.retrospectHint': '回扫最近几天的历史会话，专找「你说过但当时没记下来」的话。它只产线索，绝不自动写进记忆。要读磁盘上的会话日志，所以默认关闭。',
+      'mem.retrospectDays': '回扫窗口（天）',
+      'mem.retrospectDaysHint': '1–365。全量扫 53 个会话约 3 秒，窗口越小越快。',
       'mem.nightly': '每晚自动整理',
       'mem.nightlyHour': '整理时刻（0–23 时）',
       'mem.notify': '新对话开始时，提醒我有几条等你确认',
@@ -1169,6 +1198,18 @@ window.__ModuleLoader__.load({
       'patrol.running': '正在查…',
       'patrol.last': '上次自查',
       'patrol.never': '还没查过。这不是「没事」—— 是「没查」。',
+      'retrospect.run': '回扫一次',
+      'retrospect.running': '正在回扫…',
+      'retrospect.last': '上次回扫',
+      'retrospect.never': '还没回扫过。这不是「没有该记的」—— 是「没扫」。',
+      'retrospect.scope': '{d} 天 / {f} 个会话',
+      'retrospect.none': '没有新线索',
+      'retrospect.found': '新线索 {n} 条',
+      'retrospect.details': '这一轮找到的线索（只是线索，不是结论）',
+      'retrospect.moreDropped': '还有 {n} 条没列出',
+      'retrospect.error': '这次没扫成：{e}',
+      'retrospect.toastFound': '回扫完成：新线索 {n} 条。要不要记由你定。',
+      'retrospect.toastNone': '回扫完成：没有新线索。这不是没扫 —— 记录挂在下面。',
       'patrol.reported': '跑过了，报过',
       'patrol.silent': '查过了，没发现新情况，所以没有提醒我',
       'patrol.pending': '待确认',
@@ -1530,6 +1571,10 @@ window.__ModuleLoader__.load({
       'mem.enabled': 'Enable memory',
       'mem.autoCapture': 'Auto-capture candidates',
       'mem.autoCaptureHint': 'Things the assistant thinks are worth keeping wait here for your yes or no; nothing takes effect directly.',
+      'mem.retrospect': 'Rescan old sessions for missed items',
+      'mem.retrospectHint': 'Scans recent sessions for things you said but were never written down. It only produces leads; it never writes to memory by itself. Reads session logs from disk, so it is off by default.',
+      'mem.retrospectDays': 'Rescan window (days)',
+      'mem.retrospectDaysHint': '1–365. A full scan of 53 sessions takes about 3 seconds; a smaller window is faster.',
       'mem.nightly': 'Nightly tidy-up',
       'mem.nightlyHour': 'Hour (0–23)',
       'mem.notify': 'Mention how many are waiting when a chat starts',
@@ -1593,6 +1638,18 @@ window.__ModuleLoader__.load({
       'patrol.running': 'Checking…',
       'patrol.last': 'Last check',
       'patrol.never': 'This has never run. That is not “all clear” — it is “not run”.',
+      'retrospect.run': 'Rescan now',
+      'retrospect.running': 'Rescanning…',
+      'retrospect.last': 'Last rescan',
+      'retrospect.never': 'This has never been rescanned. That is not “nothing worth keeping” — it is “not scanned”.',
+      'retrospect.scope': '{d} days / {f} sessions',
+      'retrospect.none': 'no new leads',
+      'retrospect.found': '{n} new leads',
+      'retrospect.details': 'Leads found this round (leads, not conclusions)',
+      'retrospect.moreDropped': '{n} more not listed',
+      'retrospect.error': 'This round did not complete: {e}',
+      'retrospect.toastFound': 'Rescan done: {n} new leads. Whether to keep any is your call.',
+      'retrospect.toastNone': 'Rescan done: no new leads. Not “not scanned” — the record is below.',
       'patrol.reported': 'ran, reported',
       'patrol.silent': 'ran, found nothing new, so stayed quiet',
       'patrol.pending': 'waiting',
@@ -2862,6 +2919,75 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 回扫式复盘的记录行。
+     *
+     * 与巡夜那行同一纪律：**没线索也必须出现**。只报有事的话，
+     * 「界面上一片安静」既可能是「扫过，真没有该记的」，也可能是「压根没扫」——
+     * 这正是这套记录要消灭的那种沉默。
+     *
+     * 扫不成的轮次（目录不存在 / Node 不支持 zstd）尤其要说清，
+     * 因为那与「扫了 0 个会话」在数字上看不出区别。
+     */
+    function RetrospectLine(props) {
+      const t = props.t
+      const meta = props.meta
+      const running = props.running === true
+
+      if (!meta) {
+        return e('div', { className: 'an-hintline' }, t('retrospect.never'))
+      }
+
+      const failed = typeof meta.error === 'string' && meta.error !== ''
+      const files = typeof meta.files === 'number' ? meta.files : null
+      const days = Number(meta.scannedDays) || 0
+      const found = Number(meta.found) || 0
+
+      // 没扫成时不能显示「0 个会话」—— 那个 0 会被读成「扫了，没事」。
+      const scope = files === null
+        ? t('retrospect.error').replace('{e}', meta.error || '')
+        : t('retrospect.scope').replace('{d}', String(days)).replace('{f}', String(files))
+      const verdict = failed
+        ? ''
+        : (found > 0
+            ? t('retrospect.found').replace('{n}', String(found))
+            : t('retrospect.none'))
+
+      const items = Array.isArray(meta.leads) ? meta.leads : []
+      const dropped = Number(meta.leadsDropped) || 0
+      const droppedHint = dropped > 0
+        ? e('div', { className: 'an-hintline' }, t('retrospect.moreDropped').replace('{n}', String(dropped)))
+        : null
+
+      let details = null
+      if (items.length > 0) {
+        details = e('div', { className: 'an-mt4' },
+          e('div', { className: 'an-note' }, t('retrospect.details')),
+          e('div', { className: 'an-list an-mt4' },
+            items.map((item) => e('div', { key: item.key, className: 'an-item' },
+              e('div', { className: 'an-item-main' },
+                e('div', { className: 'an-item-text' }, item.text || ''),
+                e('div', { className: 'an-item-meta' },
+                  // 只给类型徽章，不给「建议记成什么」—— 那等于替用户写他没说过的话。
+                  e('span', { className: 'an-badge' }, item.kind || '')
+                )
+              )
+            ))
+          ),
+          droppedHint
+        )
+      }
+
+      return e('div', null,
+        e('div', { className: 'an-hintline' },
+          e('span', { className: 'an-badge' }, `${t('retrospect.last')} ${shortTime(meta.scannedAt)}`),
+          ' ',
+          e('span', null, `${scope}${verdict ? `｜${verdict}` : ''}${running ? `（${t('retrospect.running')}）` : ''}`)
+        ),
+        details
+      )
+    }
+
+    /**
      * 记忆体检面板。
      *
      * 它只报「机器能验的两件事」：路径还在不在、复核点过没过。刻意不显示任何
@@ -3682,6 +3808,9 @@ window.__ModuleLoader__.load({
       // 巡夜正在跑。单独一个状态而不是复用 checkup.running：巡夜包含整理 + 体检
       // 两步，用体检的运行态画它会让「正在体检」和「正在巡夜」混在一起。
       const [patrolRunning, setPatrolRunning] = React.useState(false)
+      // 回扫是另一条独立动作（读磁盘上的旧会话），运行态与巡夜分开：
+      // 两者都可能跑几十秒，共用一个布尔会让界面同时显示两个「正在查」。
+      const [retrospectRunning, setRetrospectRunning] = React.useState(false)
       // 正在编辑元数据的那条记忆的 id，以及编辑中的草稿。草稿与 record 分开存，
       // 因为取消编辑要能原样丢弃，不该写回 state 快照。
       const [metaEditing, setMetaEditing] = React.useState(null)
@@ -3781,7 +3910,11 @@ window.__ModuleLoader__.load({
           maxPending: Number(source.memory?.maxPending ?? 200),
           maxInjected: Number(source.memory?.maxInjected ?? 40),
           maxInjectedChars: Number(source.memory?.maxInjectedChars ?? 4000),
-          notifyOnSessionStart: source.memory?.notifyOnSessionStart !== false
+          notifyOnSessionStart: source.memory?.notifyOnSessionStart !== false,
+          // 回扫默认关（=== true 才开），与宿主 config.mjs 的默认值一致；
+          // 两边不一致会让「打开设置页看起来是关的，保存后却变成开的」。
+          retrospectEnabled: source.memory?.retrospectEnabled === true,
+          retrospectDays: Number(source.memory?.retrospectDays ?? 14)
         }
       })
 
@@ -3931,6 +4064,25 @@ window.__ModuleLoader__.load({
           text: delivered > 0
             ? t('patrol.toastReported').replace('{n}', String(delivered))
             : t('patrol.toastSilent')
+        })
+      }
+
+      const retrospectOnce = async () => {
+        setRetrospectRunning(true)
+        const result = await controller.runRetrospect()
+        setRetrospectRunning(false)
+        if (result?.ok === false) {
+          setToast({ kind: 'err', text: result.error })
+          return
+        }
+        // 同样不能说「一切正常」：没线索的时候用户要知道的是「扫过了，没有」，
+        // 而不是一句听起来像检查通过的安慰。
+        const found = Number(result?.verdict?.newLeads?.length) || 0
+        setToast({
+          kind: 'ok',
+          text: found > 0
+            ? t('retrospect.toastFound').replace('{n}', String(found))
+            : t('retrospect.toastNone')
         })
       }
 
@@ -4864,6 +5016,32 @@ window.__ModuleLoader__.load({
               onChange: (value) => patchMemory('nightlyTriage', value)
             })
           ),
+          // 回扫式复盘默认关：它要读磁盘上的历史会话日志，是比「整理内存」更外扩的一步。
+          // 打开时把窗口天数一起摆出来 —— 只给开关不给窗口，用户没法判断它扫多少。
+          e('div', { className: 'an-field' },
+            e(Toggle, {
+              id: 'mem-retrospect',
+              checked: local.memory.retrospectEnabled === true,
+              label: t('mem.retrospect'),
+              onChange: (value) => patchMemory('retrospectEnabled', value)
+            }),
+            e(Hint, null, t('mem.retrospectHint'))
+          ),
+          local.memory.retrospectEnabled === true
+            ? e('div', { className: 'an-field' },
+                e('label', { htmlFor: 'an-mem-retro-days' }, t('mem.retrospectDays')),
+                e('input', {
+                  id: 'an-mem-retro-days',
+                  className: 'an-input',
+                  type: 'number',
+                  min: 1,
+                  max: 365,
+                  value: local.memory.retrospectDays ?? 14,
+                  onChange: (event) => patchMemory('retrospectDays', Number(event.target.value))
+                }),
+                e(Hint, null, t('mem.retrospectDaysHint'))
+              )
+            : null,
           e('div', { className: 'an-field' },
             e('label', { htmlFor: 'an-mem-hour' }, t('mem.nightlyHour')),
             e('input', {
@@ -4950,7 +5128,15 @@ window.__ModuleLoader__.load({
                   className: 'an-btn an-btn-sm',
                   disabled: patrolRunning,
                   onClick: patrolOnce
-                }, patrolRunning ? t('patrol.running') : t('patrol.run'))
+                }, patrolRunning ? t('patrol.running') : t('patrol.run')),
+                // 回扫式复盘：与巡夜分开一条按钮，因为它是两件不同的事 ——
+                // 巡夜看的是**记忆库自身的状态**，回扫看的是**你说过但没被记下来的话**。
+                e('button', {
+                  type: 'button',
+                  className: 'an-btn an-btn-sm',
+                  disabled: retrospectRunning,
+                  onClick: retrospectOnce
+                }, retrospectRunning ? t('retrospect.running') : t('retrospect.run'))
               )
             ),
             // 巡夜记录：**这是「没汇报」可反查的唯一出口。**
@@ -4961,6 +5147,14 @@ window.__ModuleLoader__.load({
               meta: state.patrolMeta ?? null,
               onRun: patrolOnce,
               running: patrolRunning
+            }),
+            // 回扫记录：与巡夜那行同样的理由必须常驻 —— 「没有线索」要能被反查成
+            // 「真的扫过、确实没有」，而不是和「没扫」长得一样。
+            e(RetrospectLine, {
+              t,
+              meta: state.retrospectMeta ?? null,
+              onRun: retrospectOnce,
+              running: retrospectRunning
             }),
             e(MemoryList, {
               t,

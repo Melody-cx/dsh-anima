@@ -92,6 +92,20 @@ import {
 } from './lib/import.mjs'
 import { auditMemories } from './lib/memory-audit.mjs'
 import { assessPatrol, compactFlagged, planNightlyWake } from './lib/patrol.mjs'
+import {
+  assessRetrospect,
+  compactLeads,
+  extractLeads,
+  retrospectNoticeText
+} from './lib/retrospect.mjs'
+import {
+  hasZstdSupport,
+  isSubagentSession,
+  listSessionFiles,
+  readSessionEvents,
+  sessionsRoot,
+  toLeadEvents
+} from './lib/sessions.mjs'
 import { AUDIT_ACTORS, AUDIT_MAX_RECORDS, AUDIT_SOURCE_TEXT, summarizeAudit } from './lib/audit.mjs'
 import {
   checkResponse,
@@ -666,6 +680,9 @@ async function reload(ctx, { refreshPrompt = true, configChange = null } = {}) {
 /** meta 表里存质检计数的键。与 triage / patrol 同级，靠键区分形状。 */
 const QUALITY_STATS_KEY = 'qualityStats'
 
+/** meta 表里存回扫记录的键。与 triage / patrol / qualityStats 同级，靠键区分形状。 */
+const RETROSPECT_KEY = 'retrospect'
+
 /** 两次落盘之间的最小间隔（毫秒）。pre-step 每步都跑，不节流等于把磁盘当计数器用。 */
 const QUALITY_STATS_FLUSH_MS = 10_000
 
@@ -919,6 +936,132 @@ async function runPatrol(ctx, { reason = 'nightly' } = {}) {
   warn(ctx, `巡夜完成（${reason}）：待审 ${verdict.facts.pending}，体检 ${verdict.facts.flagged}，`
     + `整理动过 ${verdict.facts.removed} 条 → ${delivered > 0 ? `已汇报（${delivered} 个会话）` : '无事，未汇报'}`)
   return { ok: true, verdict, delivered, at, triage: triaged.summary, audit: { checked: audit.checked, flagged: audit.flagged.length } }
+}
+
+/**
+ * 回扫式复盘：回读旧会话，捞出「用户当时说过、但没记下来」的话。
+ *
+ * 为什么是「回扫」而不是「实时闸门」：拿 925 条真实发言量过 mnemon 那套两级漏斗，
+ * 第一段四条件只命中 4 条（0.4%），第二段打分公式却让 44.6% 的轮次都要送审 ——
+ * 中间没有可用档位。而真正该记的东西信号极稀：937 轮里只有 2 次抱怨「我说过」。
+ * 所以不值得为它每步跑一遍判据；定期回头扫一遍更划算。
+ *
+ * 决定性证据（这条功能存在的理由）：2026-11-04T10:13:24 用户抱怨「我有没有说过
+ * 不允许一直往 c 盘写东西」，而那条规则 2026-11-05T04:59:24 才入库 —— 晚了一天。
+ * 问题在「当时没写下来」，不在「写了没用上」。
+ *
+ * 与 runPatrol 同一条纪律：**无论说不说，都写一条 meta.retrospect。**
+ *
+ * @param {object} ctx 插件上下文
+ * @param {{reason?: string}} [options] reason 只进日志与记录，不改变判据
+ */
+async function runRetrospect(ctx, { reason = 'manual' } = {}) {
+  const store = runtime.store
+  if (!store) return { ok: false, error: '存储未就绪' }
+
+  const config = await store.getConfig()
+  if (!config.memory.enabled) return { ok: false, error: '记忆层已关闭' }
+  // 这个开关必须真的被读，否则它就只是个写着「关」却关不掉的配置项
+  // （auto-memory 那个项目踩过：开关没有读取点，等于没有开关）。
+  // 关着的时候**不写 meta** —— 「被用户关掉」和「跑了没成」是两种事实，
+  // 混进同一条记录里，用户以后看到「上次回扫失败」会以为是坏了。
+  if (!config.memory.retrospectEnabled) {
+    return { ok: false, error: '回扫式复盘当前已关闭（设置 → 灵台 里可以打开）' }
+  }
+
+  const metaTable = await store.table?.('meta')
+  const previous = metaTable ? metaTable.get(RETROSPECT_KEY) : null
+  const days = config.memory.retrospectDays
+  const sinceMs = Date.now() - days * 86400000
+  const at = new Date().toISOString()
+
+  // 记录「为什么这次没扫」也必须落盘 —— 否则「扫了没事」和「没扫」一样沉默。
+  const recordFailure = async (error) => {
+    if (metaTable) {
+      await metaTable.put(RETROSPECT_KEY, {
+        scannedAt: at,
+        scannedDays: days,
+        files: null,
+        messages: null,
+        found: null,
+        leadKeys: previous?.leadKeys ?? [],
+        leads: previous?.leads ?? null,
+        leadsDropped: previous?.leadsDropped ?? null,
+        delivered: 0,
+        error
+      })
+    }
+    warn(ctx, `复盘跳过（${reason}）：${error}`)
+    return { ok: false, error }
+  }
+
+  // Node 版本太老时 zlib 没有 zstdDecompressSync。这时候干跑一遍只会得到
+  // 「0 条线索」，而那看起来和「扫过没事」一模一样 —— 必须说清是没扫成。
+  if (!hasZstdSupport()) {
+    return recordFailure(`当前 Node（${process.version}）不支持 zstd 解压，无法读取会话日志`)
+  }
+
+  const root = sessionsRoot()
+  const listing = listSessionFiles({ root, sinceMs })
+  if (!listing.rootExists) return recordFailure(listing.error ?? `会话目录不存在：${root}`)
+
+  let messages = 0
+  let skippedSessions = 0
+  let failedFrames = 0
+  const leads = []
+  for (const entry of listing.files) {
+    let events
+    try {
+      const read = readSessionEvents(entry.file)
+      events = read.events
+      failedFrames += read.failedFrames ?? 0
+    } catch {
+      skippedSessions += 1
+      continue
+    }
+    // subagent 会话里 source.kind 也是 'user'，但那些话是父 agent 写的任务书。
+    if (isSubagentSession(events)) {
+      skippedSessions += 1
+      continue
+    }
+    const leadEvents = toLeadEvents(events)
+    const sessionRef = entry.file.slice(root.length + 1).replace(/\\/g, '/').replace(/\/session\.v4\.jsonl\.zstd$/, '')
+    const r = extractLeads({ events: leadEvents, sinceMs, maxLeads: 500, sessionRef })
+    messages += r.scanned
+    leads.push(...r.leads)
+  }
+
+  const verdict = assessRetrospect({ leads, previousKeys: previous?.leadKeys ?? [] })
+  const compact = compactLeads(verdict.newLeads)
+
+  // 已报过的键要累积着留，否则下一轮会把老线索当成新的再报一次。
+  const mergedKeys = [...new Set([...(previous?.leadKeys ?? []), ...verdict.newLeads.map((l) => l.key)])].slice(-500)
+
+  let delivered = 0
+  if (verdict.shouldReport && config.memory.notifyOnSessionStart) {
+    const text = retrospectNoticeText(verdict.newLeads)
+    delivered = await injectToAgents(ctx, text, '复盘线索')
+  }
+
+  if (metaTable) {
+    await metaTable.put(RETROSPECT_KEY, {
+      scannedAt: at,
+      scannedDays: days,
+      files: listing.files.length - skippedSessions,
+      messages,
+      found: verdict.newLeads.length,
+      leadKeys: mergedKeys,
+      // 只保留最近这一批的明细：更早的已经报过，界面上再列一遍只是噪音。
+      leads: compact.items.length > 0 ? compact.items : null,
+      leadsDropped: compact.dropped,
+      delivered,
+      error: failedFrames > 0 ? `有 ${failedFrames} 帧解压失败，这部分内容不可见` : undefined
+    })
+  }
+
+  warn(ctx, `复盘完成（${reason}）：扫 ${listing.files.length - skippedSessions} 个会话 / ${messages} 条发言，`
+    + `新线索 ${verdict.newLeads.length} 条 → ${delivered > 0 ? `已提示（${delivered} 个会话）` : '无新线索，未提示'}`)
+  return { ok: true, at, days, files: listing.files.length - skippedSessions, messages, verdict, delivered, failedFrames }
 }
 
 /**
@@ -1205,6 +1348,7 @@ function registerRoutes(ctx) {
       const metaTable = await runtime.store.table?.('meta')
       const meta = metaTable?.get('triage')
       const patrolMeta = metaTable?.get('patrol')
+      const retrospectMeta = metaTable?.get(RETROSPECT_KEY)
       // 「每条记忆为什么进 / 为什么不进」随 state 下发。设置页只能通过 HTTP 拿到
       // 状态，没有会话 context，因此 cwd 走查询参数 —— 不传时按「无工作区上下文」
       // 计算，此时工作区记忆一律显示为「当前会话没有工作区信息」，这本身也是
@@ -1298,6 +1442,9 @@ function registerRoutes(ctx) {
         // 写这一行，后者根本没有这一行，于是用户随时能分清。reported=false 且
         // facts 全 0 就是「真的没事」，不是「它死了」。
         patrolMeta: patrolMeta ?? null,
+        // 回扫记录：与 patrolMeta 同理。「没线索」和「没扫」必须能分开 ——
+        // 前者写着 scannedAt，后者根本没有这一行。
+        retrospectMeta: retrospectMeta ?? null,
         // 质检钩子的运行计数。
         //
         // 口径是**累计**（跨重启），不是「本次运行」。曾经的注释写的是「仅内存，
@@ -1766,6 +1913,13 @@ function registerRoutes(ctx) {
       send(res, result.ok ? 200 : 400, result)
     })
 
+    // 回扫式复盘：与巡夜走同一条判据纪律（无论说不说都留痕），但触发时机不同 ——
+    // 它可以手动跑，也可以在启动补跑时顺带跑一次。
+    route('/api/anima/retrospect', async (req, res) => {
+      const result = await runRetrospect(ctx, { reason: 'manual' })
+      send(res, result.ok ? 200 : 400, result)
+    })
+
     // 记忆体检：只做机械能验的事（路径还在不在、复核点过没过），不改任何状态。
     //
     // 为什么不自动改：判断「这两条讲的是不是同一件事、新的有没有推翻旧的」是语义
@@ -1918,7 +2072,8 @@ const SET_TOP_KEYS = new Set([
 
 const SET_MEMORY_KEYS = new Set([
   'enabled', 'autoCapture', 'nightlyTriage', 'nightlyHour', 'maxPending',
-  'maxInjected', 'maxInjectedChars', 'notifyOnSessionStart', 'defaultLayer'
+  'maxInjected', 'maxInjectedChars', 'notifyOnSessionStart', 'defaultLayer',
+  'retrospectEnabled', 'retrospectDays'
 ])
 
 /**
@@ -1941,12 +2096,14 @@ const SET_QUALITY_KEYS = new Set(['enabled', 'ledgerLevel', 'strict', 'preStepCh
 const SET_BOOLEAN_KEYS = new Set([
   'enabled', 'requireToolConfirmation', 'trailEnabled', 'workspaceOverridesEnabled',
   'memory.enabled', 'memory.autoCapture', 'memory.nightlyTriage', 'memory.notifyOnSessionStart',
+  'memory.retrospectEnabled',
   'quality.enabled', 'quality.strict', 'quality.preStepCheck'
 ])
 
 /** 按整数解析的键。**范围不在这里判** —— 越界要报「必须是 0..23」，交给 sanitizeConfig。 */
 const SET_NUMBER_KEYS = new Set([
   'memory.nightlyHour', 'memory.maxPending', 'memory.maxInjected', 'memory.maxInjectedChars',
+  'memory.retrospectDays',
   'quality.maxFindingsInReminder'
 ])
 
@@ -2040,7 +2197,7 @@ function registerCommands(ctx) {
     cmdCtx.commands.register({
       name: 'anima',
       description: '管理灵台：AI 名字、工作区覆盖与待审记忆缓冲区',
-      input: { hint: '[show|pending|adopt <id>|discard <id>|mark <id> type=… state=…|triage|patrol|checkup|audit|name <名字>|set k=v …|enable|disable|confirm|reject|reset]' },
+      input: { hint: '[show|pending|adopt <id>|discard <id>|mark <id> type=… state=…|triage|patrol|复盘|checkup|audit|name <名字>|set k=v …|enable|disable|confirm|reject|reset]' },
       async handler(invocation) {
         const raw = String(invocation?.rawInput || '').trim()
         const spaceAt = raw.search(/\s/)
@@ -2191,6 +2348,28 @@ function registerCommands(ctx) {
             lines.push(delivered > 0
               ? `已汇报（${delivered} 个会话）。`
               : '判定为无事，没有汇报。这条记录留在 meta.patrol 里，可反查。')
+            return { kind: 'success', text: lines.join('\n') }
+          }
+
+          if (verb === 'retrospect' || verb === '复盘') {
+            const result = await runRetrospect(ctx, { reason: 'command' })
+            if (!result.ok) return { kind: 'error', text: result.error }
+            const lines = [
+              `复盘完成：回扫最近 ${result.days} 天的 ${result.files} 个会话、${result.messages} 条发言，新线索 ${result.verdict.newLeads.length} 条。`
+            ]
+            if (result.verdict.newLeads.length > 0) {
+              for (const lead of result.verdict.newLeads.slice(0, 8)) {
+                lines.push(`· [${lead.kind}] ${lead.text}${lead.sessionRef ? `（${lead.sessionRef}）` : ''}`)
+              }
+              if (result.verdict.newLeads.length > 8) {
+                lines.push(`· 另有 ${result.verdict.newLeads.length - 8} 条，见 meta.retrospect。`)
+              }
+            } else {
+              lines.push('没有新线索。这条记录留在 meta.retrospect 里，可反查。')
+            }
+            lines.push(result.delivered > 0
+              ? `已提示（${result.delivered} 个会话）。`
+              : '没有提示。')
             return { kind: 'success', text: lines.join('\n') }
           }
 
