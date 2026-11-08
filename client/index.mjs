@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.2'
+    const VERSION = '2.1.3'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -824,14 +824,25 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     const css = [
-      // 底部留 72px：保存栏是 sticky bottom（约 52px 高），不留够它就会压住最后一行内容。
-      // 用户录屏里「还有 N 条」和保存栏文案叠在一行，就是这个原因 —— 底部空间不够。
-      '.an-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 72px}',
+      // 底部空间只在「有未保存改动」时预留：那种状态下保存栏吸底（约 52px 高），
+      // 不留够它就会压住最后一行内容 —— 用户录屏里「还有 N 条」和保存栏叠在一行
+      // 就是这个原因。干净时保存栏是普通静态条，跟着内容滚，不需要预留。
+      //
+      // 这里用 data 属性而不是多加一个类名：保存栏的类名被 smoke-client 按
+      // `className === 'an-savebar'` 精确匹配（三处），加类会直接打挂它们。
+      '.an-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 24px}',
+      '.an-root[data-an-dirty="true"]{padding-bottom:72px}',
       // ── 分区导航 ──
-      // 吸附在页面顶部：设置页本身就是一个可滚动的长面板，翻到第三张卡时还看得见
-      // 分区在哪一排，才谈得上「随时能切」。背景取页面底色而不是卡片色，避免与
-      // 下面的卡片混成一片。
-      '.an-sectnav{display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);position:sticky;top:0;z-index:20}',
+      // 不再吸顶。原先是 position:sticky;top:0，理由是「翻到第三张卡时还看得见
+      // 分区在哪一排」。实际代价是：宿主设置面板的滚动窗口只有约 722px
+      // （800 面板高 − 54 的 header − 24 的底部内边距），而灵台底部还有一条吸底
+      // 的保存栏，上下两条常驻栏合计吃掉约 10% 的高度，且吸顶那条与面板自身的
+      // 边缘只隔 4px，视觉上像贴了两层。
+      //
+      // 现在改成跟着内容滚走：分区只有五栏、且切换成本很低（宿主左栏里灵台是
+      // 一整块），为了「随时能切」常驻一条栏并不划算。NN/g 讲 sticky header 的
+      // 第一条就是「先问到底需不需要它」。
+      '.an-sectnav{display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
       '.an-sectnav-tab{padding:5px 14px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
       '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary)}',
       // 选中态必须一眼看得见。原来用 --dsw-alias-bg-base 当背景，那是**页面自身底色**，
@@ -840,9 +851,15 @@ window.__ModuleLoader__.load({
       '.an-sectnav-tab-on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary)}',
       // ── 底部保存栏 ──
       // 卡片里原来散着六处「保存」，每张卡各自一份、四条走的是同一个 doSave。
-      // 收成一条固定栏之后，「现在有改动没保存」这件事只有一个说法。
-      // 吸附在底部并压暗上缘：它盖住内容时仍看得出下面还有东西。
-      '.an-savebar{position:sticky;bottom:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1));box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
+      // 收成一条之后，「现在有改动没保存」这件事只有一个说法。
+      //
+      // 只在**真的有未保存改动**时才吸底。干净时它是一条普通静态栏，跟着内容滚。
+      // 理由同上：滚动窗口约 722px，一条常驻的栏不值得。而脏了的时候它必须一直在
+      // 眼前 —— 那时用户最需要的正是「还有东西没存」这个提示和那颗按钮。
+      // 用 data 属性而不是类名，因为三处 smoke-client 用例按 `className === 'an-savebar'`
+      // 精确匹配这个节点。
+      '.an-savebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1))}',
+      '.an-savebar[data-an-dirty="true"]{position:sticky;bottom:0;z-index:20;box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
       '.an-savebar-text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
       '.an-savebar-text-dirty{color:var(--dsw-alias-label-warning,#d48806)}',
       '.an-card{padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
@@ -966,6 +983,17 @@ window.__ModuleLoader__.load({
       '.an-card-aside{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}',
       '.an-card-toggle{flex:0 0 auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-card-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
+      // ── 卡内子块（记忆卡的清单区）──
+      //
+      // 与 Card 的折叠是两套：类名刻意不复用 `an-card*`，因为测试里有几处按
+      // 「`an-card an-card-collapsed` 有几个」来判卡片默认态，子块混进去就会
+      // 把那些数字搅乱。样式上它们确实长得像，但语义不同 —— 一层是页面结构，
+      // 一层是同一张卡内部的清单开关。
+      '.an-block-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}',
+      '.an-block-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      '.an-block-toggle{flex:0 0 auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-block-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
+      '.an-block-body{display:flex;flex-direction:column;gap:10px;margin-top:10px}',
       // ── 预览卡附注 ──
       '.an-charcount{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
       '.an-invalid{margin-top:6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-warning,#d48806);word-break:break-all}',
@@ -998,7 +1026,14 @@ window.__ModuleLoader__.load({
       '.an-mt20{margin-top:20px}',
       '.an-mr12{margin-right:12px}',
       '.an-minw0{min-width:0}',
-      '.an-gap16{display:flex;gap:16px}',
+      // 窄屏兜底：这一行装的是三个数字输入框。原来 an-gap16 不换行、an-flexfill
+      // 又是 flex:1 1 0（可以一直压下去），窗口窄到内容区 300px 左右时三个框各剩下
+      // 不到 90px，数字被截成「1…」，看不出填了什么。
+      //
+      // 改成给每个框一个 160px 的 flex-basis 并允许换行：内容区宽 532px 时三个框
+      // 刚好还是一行（160×3 + 16×2 = 512），窄到装不下就自己掉成两行、一行。
+      // 这是这个文件一贯的做法（见下方 an-flex240 那组注释），不引入媒体查询。
+      '.an-gap16{display:flex;flex-wrap:wrap;gap:16px}',
       '.an-gap16wrap{display:flex;flex-wrap:wrap;gap:16px}',
       '.an-gap12wrap{display:flex;flex-wrap:wrap;gap:12px}',
       '.an-rowcenter{display:flex;gap:8px;align-items:center}',
@@ -2101,6 +2136,9 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /** 栏 id → 该栏的卡片顺序。给 cardSlot 判断「是不是首张」用。 */
+    const SECTION_CARDS = new Map(SECTIONS.map((section) => [section.id, section.cards]))
+
     function reasonText(t, reason) {
       if (!reason) return ''
       const text = String(reason)
@@ -2125,22 +2163,58 @@ window.__ModuleLoader__.load({
      *
      * 刻意不用下拉框：分区只有五栏，横排一眼能看全，也能直接看出「原来还有
      * 别的页」，而下拉把这件事藏进一次点击之后。
+     *
+     * 键盘与读屏（原来只有 role=tablist/tab + aria-selected，键盘完全按不到）：
+     *   - 一组 tab 里只有当前那个可 Tab 进入，其余 tabIndex=-1（漫游 tabindex，
+     *     这是 ARIA tabs 的标配，否则按五次 Tab 才能跳过这条导航栏）；
+     *   - 左/右箭头移一位、Home/End 跳首尾，都「选中并聚焦」，即自动激活；
+     *   - 每个 tab 用 aria-controls 指向本栏内容，内容侧挂在各卡片的
+     *     data-an-section 上（见 cardSlot），由 tabpanel 属性认领。
      */
     function SectionNav(props) {
       const t = typeof props.t === 'function' ? props.t : FALLBACK_T
-      return e('div', { className: 'an-sectnav', role: 'tablist' },
-        SECTIONS.map((section) =>
-          e('button', {
+      const select = (id) => {
+        if (typeof props.onSelect === 'function') props.onSelect(id)
+      }
+      // 键盘换栏后要把焦点一起带过去 —— 只管选中不管焦点的话，焦点会留在
+      // 一个已变成 tabIndex=-1 的元素里，下一次按 Tab 的落点会跳得很意外。
+      const focusTab = (id) => {
+        if (typeof document === 'undefined') return
+        const node = document.getElementById(`an-sectnav-tab-${id}`)
+        if (node && typeof node.focus === 'function') node.focus()
+      }
+      const onKeyDown = (event) => {
+        const key = event?.key
+        const ids = SECTION_IDS
+        const current = ids.indexOf(props.active)
+        if (current < 0) return
+        let next = -1
+        if (key === 'ArrowRight') next = (current + 1) % ids.length
+        else if (key === 'ArrowLeft') next = (current - 1 + ids.length) % ids.length
+        else if (key === 'Home') next = 0
+        else if (key === 'End') next = ids.length - 1
+        if (next < 0) return
+        if (typeof event.preventDefault === 'function') event.preventDefault()
+        const target = ids[next]
+        select(target)
+        focusTab(target)
+      }
+      return e('div', { className: 'an-sectnav', role: 'tablist', 'aria-label': t('nav.label'), onKeyDown },
+        SECTIONS.map((section) => {
+          const on = props.active === section.id
+          return e('button', {
             key: section.id,
             type: 'button',
             role: 'tab',
-            className: `an-sectnav-tab${props.active === section.id ? ' an-sectnav-tab-on' : ''}`,
-            'aria-selected': props.active === section.id ? 'true' : 'false',
-            onClick: () => {
-              if (typeof props.onSelect === 'function') props.onSelect(section.id)
-            }
+            id: `an-sectnav-tab-${section.id}`,
+            // 指到本栏的第一张卡（多卡栏只锚在首张上，见 cardSlot 里 tabpanel 的说明）。
+            'aria-controls': `an-card-${section.cards[0]}`,
+            className: `an-sectnav-tab${on ? ' an-sectnav-tab-on' : ''}`,
+            'aria-selected': on ? 'true' : 'false',
+            tabIndex: on ? 0 : -1,
+            onClick: () => select(section.id)
           }, t(`section.${section.id}`))
-        )
+        })
       )
     }
 
@@ -2195,7 +2269,18 @@ window.__ModuleLoader__.load({
       }
       return e('section', {
         className: `an-card${collapsed ? ' an-card-collapsed' : ''}`,
+        // id 给分区导航的 aria-controls 用（`an-card-<id>`），必须与
+        // SectionNav 里拼的那个字符串保持一致。
+        id: id ? `an-card-${id}` : undefined,
         'data-an-card': id || undefined,
+        // 一张卡属于哪一栏；section 为 null 的卡（理论上没有）就当普通块。
+        'data-an-section': typeof props.section === 'string' ? props.section : undefined,
+        // 每栏第一张卡才是 tab 对应的那个 panel，其余卡是它里面的内容块。
+        role: props.tabpanel === true ? 'tabpanel' : undefined,
+        'aria-labelledby': props.tabpanel === true ? `an-sectnav-tab-${props.section}` : undefined,
+        // 隐藏的栏不能留在无障碍树里，也不能被 Tab 走到 —— display:none 已经
+        // 两样都做到了，这里把它显式写成 aria-hidden 只是让读屏行为不依赖样式。
+        'aria-hidden': hidden ? 'true' : undefined,
         style: hidden ? { display: 'none' } : undefined
       },
         e('div', { className: 'an-card-head' },
@@ -2210,6 +2295,61 @@ window.__ModuleLoader__.load({
         ),
         collapsed ? null : props.children
       )
+    }
+
+    /**
+     * 记忆卡内部的清单子块：标题 + 一排按钮 + 可折叠的正文。
+     *
+     * 为什么要有这一层：记忆卡是九张卡里最大的一张（13 个字段、四个清单区），
+     * 从头拉到尾要滚好几屏，而其中「已采纳」「已丢弃」多数时候只是来核对的。
+     * 但卡片级折叠又太粗 —— 一收就把待审也收走了，而待审是需要动手的。
+     *
+     * 三个刻意的取舍：
+     *   ① 收起时**不卸载子树**，只用 display:none。子树里有未提交的草稿
+     *      （手动添加的文本框、导入面板解析出来的预览），卸载就等于把用户
+     *      刚敲的字扔掉；另外测试是按渲染树取文字断言的，卸载会让「卡里有
+     *      体检入口」这类断言变成假红。
+     *   ② 类名不复用 `an-card*`：测试里有几处按「`an-card an-card-collapsed`
+     *      有几个」判卡片默认态，子块混进去会把那些数字搅乱。
+     *   ③ 和 Card 一样不自己 useState，状态由设置页顶层持有并落盘。
+     */
+    function MemBlock(props) {
+      const t = typeof props.t === 'function' ? props.t : FALLBACK_T
+      const id = typeof props.id === 'string' ? props.id : ''
+      const collapsed = props.collapsed === true
+      const toggleLabel = collapsed ? t('card.expand') : t('card.collapse')
+      return e('div', { className: props.className ?? 'an-mt20' },
+        e('div', { className: 'an-block-head' },
+          e('div', { className: 'an-block-title' }, props.title),
+          e('div', { className: 'an-actions' },
+            props.aside ?? null,
+            e('button', {
+              type: 'button',
+              className: 'an-block-toggle',
+              'aria-expanded': collapsed ? 'false' : 'true',
+              title: toggleLabel,
+              onClick: () => { if (typeof props.onToggle === 'function') props.onToggle(id) }
+            }, toggleLabel)
+          )
+        ),
+        e('div', {
+          className: 'an-block-body',
+          style: collapsed ? { display: 'none' } : undefined
+        }, props.children)
+      )
+    }
+
+    // 记忆卡四个清单子块的默认态：待审与手动添加要动手，展开；已采纳与已丢弃
+    // 是清单，默认收起。
+    //
+    // 刻意不并进 DEFAULT_COLLAPSED：那张表被「卡片默认收起几张」的用例数着，
+    // 加进去会让那些数字对不上。键名带 `block:` 前缀，与卡片 id 不会撞。
+    const DEFAULT_COLLAPSED_BLOCKS = { adopted: true, discarded: true }
+
+    function memBlockCollapsed(id, overrides) {
+      const key = `block:${id}`
+      if (overrides && typeof overrides[key] === 'boolean') return overrides[key]
+      return DEFAULT_COLLAPSED_BLOCKS[id] === true
     }
 
     // 哪些卡默认收起：判据是「你是来改东西的，还是来查东西的」。
@@ -3885,6 +4025,24 @@ window.__ModuleLoader__.load({
       // 不必记得同时传 collapsed 与 onToggle（漏一个就是「按钮点了没反应」）。
       const cardState = (id) => ({ collapsed: cardCollapsed(id, cardStateMap), onToggle: toggleCard })
 
+      // 记忆卡内部的清单子块，与卡片共用同一份落盘（cardStateMap 里 `block:` 前缀
+      // 的键），但不共用默认表 —— 见 DEFAULT_COLLAPSED_BLOCKS 的说明。
+      const toggleMemBlock = (id) => {
+        if (!id) return
+        setCardStateMap((prev) => {
+          const key = `block:${id}`
+          const next = { ...prev }
+          next[key] = !memBlockCollapsed(id, prev)
+          writeCardState(next)
+          return next
+        })
+      }
+
+      const memBlockState = (id) => ({
+        collapsed: memBlockCollapsed(id, cardStateMap),
+        onToggle: toggleMemBlock
+      })
+
       const selectSection = (id) => {
         if (!SECTION_IDS.includes(id)) return
         writeActiveSection(id)
@@ -3894,7 +4052,17 @@ window.__ModuleLoader__.load({
       // 卡片的三态接线：折叠态 + 「此刻是不是在这一栏」。
       // 与 cardState 分开命名而不是加参数，是因为所有调用点都写 `...cardState(id)`，
       // 加参数会静默漏掉后面新增的卡片（漏了就是「点进去什么也没有」）。
-      const cardSlot = (id) => ({ ...cardState(id), hidden: sectionOfCard(id) !== activeSection })
+      //
+      // 顺带把「这张卡属于哪一栏、是不是该栏的第一张」也交给 Card：
+      //   - 分区导航的 aria-controls 只锚在每栏第一张卡上（一个 tab 对应一个
+      //     panel 是 ARIA 的约定，而人设栏有三张卡）；
+      //   - 所以只有第一张卡挂 role=tabpanel / aria-labelledby，其余卡是同一
+      //     panel 里的内容块。
+      const cardSlot = (id) => {
+        const section = sectionOfCard(id)
+        const first = SECTION_CARDS.get(section)?.[0] === id
+        return { ...cardState(id), hidden: section !== activeSection, section, tabpanel: first }
+      }
 
       // 服务端状态 → 本地表单
       React.useEffect(() => {
@@ -4332,7 +4500,11 @@ window.__ModuleLoader__.load({
         return e('dl', { className: 'an-kv' }, rows)
       })()
 
-      return e('div', { className: 'an-root' },
+      return e('div', {
+        className: 'an-root',
+        // 有未保存改动时给底部多留 72px，给吸底的保存栏腾位（见 .an-root 注释）。
+        'data-an-dirty': dirty || wsDirty ? 'true' : 'false'
+      },
         toastNode,
 
         e('div', { className: 'an-row-between' },
@@ -5150,36 +5322,39 @@ window.__ModuleLoader__.load({
           // 这一段的保存按钮已收到页面底部的保存栏（理由见 identity 卡头）。
 
           // 待审缓冲区
-          e('div', { className: 'an-mt20' },
-            e('div', { className: 'an-row-between' },
-              e('div', { className: 'an-card-title' }, `${t('mem.pending')}（${pending.length}）`),
-              e('div', { className: 'an-actions' },
-                state.triageMeta?.lastTriageAt
-                  ? e('span', { className: 'an-badge' }, `${t('mem.lastTriage')} ${shortTime(state.triageMeta.lastTriageAt)}`)
-                  : null,
-                e('button', {
-                  type: 'button',
-                  className: 'an-btn an-btn-sm',
-                  onClick: triageOnce
-                }, t('mem.triage')),
-                // 巡夜可以手动跑一次，且与定时那次走同一条判据 —— 否则「手点一次」
-                // 和「它自己跑一次」会给出不同答案，这个机制就永远没法验。
-                e('button', {
-                  type: 'button',
-                  className: 'an-btn an-btn-sm',
-                  disabled: patrolRunning,
-                  onClick: patrolOnce
-                }, patrolRunning ? t('patrol.running') : t('patrol.run')),
-                // 回扫式复盘：与巡夜分开一条按钮，因为它是两件不同的事 ——
-                // 巡夜看的是**记忆库自身的状态**，回扫看的是**你说过但没被记下来的话**。
-                e('button', {
-                  type: 'button',
-                  className: 'an-btn an-btn-sm',
-                  disabled: retrospectRunning,
-                  onClick: retrospectOnce
-                }, retrospectRunning ? t('retrospect.running') : t('retrospect.run'))
-              )
-            ),
+          e(MemBlock, {
+            id: 'pending',
+            t,
+            className: 'an-mt20',
+            title: `${t('mem.pending')}（${pending.length}）`,
+            ...memBlockState('pending'),
+            aside: e('div', { className: 'an-actions' },
+              state.triageMeta?.lastTriageAt
+                ? e('span', { className: 'an-badge' }, `${t('mem.lastTriage')} ${shortTime(state.triageMeta.lastTriageAt)}`)
+                : null,
+              e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm',
+                onClick: triageOnce
+              }, t('mem.triage')),
+              // 巡夜可以手动跑一次，且与定时那次走同一条判据 —— 否则「手点一次」
+              // 和「它自己跑一次」会给出不同答案，这个机制就永远没法验。
+              e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm',
+                disabled: patrolRunning,
+                onClick: patrolOnce
+              }, patrolRunning ? t('patrol.running') : t('patrol.run')),
+              // 回扫式复盘：与巡夜分开一条按钮，因为它是两件不同的事 ——
+              // 巡夜看的是**记忆库自身的状态**，回扫看的是**你说过但没被记下来的话**。
+              e('button', {
+                type: 'button',
+                className: 'an-btn an-btn-sm',
+                disabled: retrospectRunning,
+                onClick: retrospectOnce
+              }, retrospectRunning ? t('retrospect.running') : t('retrospect.run'))
+            )
+          },
             // 巡夜记录：**这是「没汇报」可反查的唯一出口。**
             // 只报有事之后，沉默有两种意思 —— 巡过了没事 / 巡夜没跑。前者有这一行，
             // 后者根本没有，于是用户随时能分清。所以这行必须在「没汇报」时也出现。
@@ -5209,8 +5384,13 @@ window.__ModuleLoader__.load({
           ),
 
           // 手动添加
-          e('div', { className: 'an-mt20' },
-            e('div', { className: 'an-card-title' }, t('mem.add')),
+          e(MemBlock, {
+            id: 'add',
+            t,
+            className: 'an-mt20',
+            title: t('mem.add'),
+            ...memBlockState('add')
+          },
             e('div', { className: 'an-field an-mt10' },
               e('textarea', {
                 className: 'an-textarea',
@@ -5256,8 +5436,13 @@ window.__ModuleLoader__.load({
           ),
 
           // 已采纳
-          e('div', { className: 'an-mt20' },
-            e('div', { className: 'an-card-title' }, `${t('mem.adopted')}（${adopted.length}）`),
+          e(MemBlock, {
+            id: 'adopted',
+            t,
+            className: 'an-mt20',
+            title: `${t('mem.adopted')}（${adopted.length}）`,
+            ...memBlockState('adopted')
+          },
             e(MemoryList, {
               t,
               items: adopted,
@@ -5304,8 +5489,13 @@ window.__ModuleLoader__.load({
 
           // 已丢弃（折叠为计数，避免占屏）
           discarded.length > 0
-            ? e('div', { className: 'an-mt16' },
-                e('div', { className: 'an-card-title' }, `${t('mem.discarded')}（${discarded.length}）`),
+            ? e(MemBlock, {
+                id: 'discarded',
+                t,
+                className: 'an-mt16',
+                title: `${t('mem.discarded')}（${discarded.length}）`,
+                ...memBlockState('discarded')
+              },
                 e(MemoryList, {
                   t,
                   items: discarded,
@@ -5501,7 +5691,12 @@ window.__ModuleLoader__.load({
         //
         // 工作区覆盖有自己的脏状态（写的是工作区文件，不是全局配置），
         // 但对用户来说都是「我改了东西还没落盘」，所以同一根栏里一起报、一起存。
-        e('div', { className: 'an-savebar' },
+        e('div', {
+          className: 'an-savebar',
+          // 只有脏了才吸底（CSS 里按这个属性决定 position）。干净时它跟着内容滚走，
+          // 把约 46px 的常驻高度还给内容区。
+          'data-an-dirty': dirty || wsDirty ? 'true' : 'false'
+        },
           e('div', { className: dirty || wsDirty ? 'an-savebar-text an-savebar-text-dirty' : 'an-savebar-text' },
             dirty || wsDirty ? t('savebar.dirty') : t('savebar.clean')
           ),

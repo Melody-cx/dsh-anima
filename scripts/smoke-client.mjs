@@ -2293,6 +2293,85 @@ await test('体检面板：查出问题必须逐条给出证据与命令，不�
   }
 })
 
+await test('记忆卡内的清单子块：待审默认展开、已采纳默认收起，收起只是 display:none 不卸子树', async () => {
+  // 这条钉的是三件事，任何一件退回去都会让这张卡难用：
+  //   ① 默认态按「要动手的展开、只核对的收起」分；
+  //   ② 收起用 display:none，**子树仍在渲染树里** —— 子块里有未提交的草稿
+  //      （手动添加的文本框），卸载等于把用户刚敲的字扔掉；
+  //   ③ 折叠态与卡片共用同一份 localStorage，翻过之后要记得住。
+  const CARD_STATE_KEY = 'dsh-anima:card-state'
+  const saved = STATE_PAYLOAD.memories
+  const nodes = () => cardNodes(lastTree, dict.zh['mem.title'], 'mem')
+  const toggles = () => elements(nodes(), 'button').filter((n) => n.props.className === 'an-block-toggle')
+  // 子块的正文容器：折起时带 display:none，展开时没有 style。
+  const bodies = () => elements(nodes(), 'div').filter((n) => n.props.className === 'an-block-body')
+
+  try {
+    storageBacking.delete(CARD_STATE_KEY)
+    // 默认夹具里 discarded 是空的，而「已丢弃」子块只在有条目时才画 ——
+    // 给它一条，否则子块数量会随夹具漂移，断言就成了在测夹具本身。
+    STATE_PAYLOAD.memories = {
+      ...saved,
+      discarded: [{ id: 'm3', text: '被丢掉的', status: 'discarded', capturedAt: 1760000000000 }]
+    }
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+
+    // 四个子块：待审 / 手动添加 / 已采纳 / 已丢弃。
+    assert.equal(toggles().length, 4, `记忆卡内应有四个可折叠子块，实际 ${toggles().length}`)
+
+    const expanded = toggles().map((n) => n.props['aria-expanded'])
+    assert.deepEqual(expanded, ['true', 'true', 'false', 'false'], `默认态不对：${JSON.stringify(expanded)}`)
+
+    // 基准值：卡片层面的收起数（点开子块前后必须一致）。
+    const cardCollapsedBefore = byClass(walk(lastTree), 'an-card an-card-collapsed').length
+
+    // 收起态：正文容器还在，只是 display:none。
+    const hiddenBodies = bodies().filter((n) => n.props.style?.display === 'none')
+    assert.equal(hiddenBodies.length, 2, `应有且只有两个子块默认收起，实际 ${hiddenBodies.length}`)
+    // 关键：被收起的「已采纳」里那些条目文字仍在渲染树中 —— 不是卸载。
+    assert.ok(
+      allText(nodes()).includes(dict.zh['mem.adopted']),
+      '收起后标题不该跟着消失'
+    )
+    assert.ok(
+      allText(nodes()).includes('已采纳一'),
+      '收起只是 display:none，条目文字不该从渲染树里消失'
+    )
+
+    // 点一下「已采纳」的展开按钮，它应当展开并写进同一份 localStorage。
+    const adoptedToggle = toggles().find(
+      (n) => n.props['aria-expanded'] === 'false'
+    )
+    assert.ok(adoptedToggle, '收起态的子块上没有展开按钮')
+    adoptedToggle.props.onClick()
+    await flush()
+    const stored = JSON.parse(storageBacking.get(CARD_STATE_KEY) ?? '{}')
+    // 存的是「收起没有」：默认收起(true) → 点一下变成 false(展开)。
+    assert.equal(stored['block:adopted'], false, `子块折叠态没落盘：${JSON.stringify(stored)}`)
+    assert.equal(
+      bodies().filter((n) => n.props.style?.display === 'none').length,
+      1,
+      '展开一个之后应只剩一个收起'
+    )
+
+    // 子块的类名不许污染卡片的折叠计数：点开一个子块，卡片层面的收起数不该动。
+    // （不能死写「应为 1」——前面的用例会把预览卡的折叠态翻过来，那个基数会漂。）
+    assert.equal(
+      byClass(walk(lastTree), 'an-card an-card-collapsed').length,
+      cardCollapsedBefore,
+      '子块折叠被算进了卡片的收起数'
+    )
+  } finally {
+    STATE_PAYLOAD.memories = saved
+    storageBacking.delete(CARD_STATE_KEY)
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+  }
+})
+
 await test('记忆卡片：没有元数据时不许凭空画出徽章（缺字段不等于「事实」）', async () => {
   // 老记忆一条都没有 type/state/verifyAt/sourceRef。回落成「事实」会让用户以为
   // 那是数据，其实是单元格空着 —— 空着就该什么都不画。
