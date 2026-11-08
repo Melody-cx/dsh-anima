@@ -1101,6 +1101,35 @@ await test('注入情况：工作区坐标与两个预算都画出来了', () =>
   assert.ok(text.includes('4 / 4000'), '没画字符预算')
 })
 
+await test('注入情况：拉 state 时必须带上当前工作区坐标（否则解释面板拿错答案）', async () => {
+  // 回归（2026-11-09）：`loadState()` 原来打的是裸 `/api/anima/state`，而宿主用
+  // `?cwd=` 决定「按哪个工作区算注入」（index.mjs 的 state 路由读 searchParams.cwd）。
+  // 不带就是按「没有工作区上下文」算 ⇒ 一条正在生效的工作区记忆会被标成
+  // `no-workspace-context`，面板指着它说「这条没进去」。
+  //
+  // 这个 bug 以前看不见，因为工作区记忆根本落不了库（导入丢 cwd 那个 bug）——
+  // 没有工作区条目可解释，面板错也错得无从对照。
+  const stateUrls = () => fetchCalls.filter((c) => c.url.includes('/api/anima/state')).map((c) => c.url)
+  const wsPath = 'D:\\deepseek工作区'
+
+  // ① 有工作区时：state 请求要带上它
+  await controller.loadWorkspace(wsPath)
+  await flush()
+  const withWs = stateUrls()
+  assert.ok(withWs.length > 0, '换工作区后没有重拉 state')
+  assert.ok(
+    withWs.some((u) => u.includes(encodeURIComponent(wsPath))),
+    `拉 state 没带工作区坐标：${JSON.stringify(withWs.slice(-3))}`
+  )
+
+  // ② 回到「没选工作区」时：不能继续带着上一次的坐标（那会把答案算在错的工作区上）
+  await controller.loadWorkspace('')
+  await flush()
+  const last = stateUrls().pop()
+  assert.ok(last, '清空工作区后没有重拉 state')
+  assert.equal(last.includes('cwd='), false, `没选工作区却还带着坐标：${last}`)
+})
+
 await test('注入情况：超窗计数只在大于 0 时出现（0 条时不画，避免一条永远不动的水位）', async () => {
   // 现状：21 条记忆全是 7 天龄、全部 fresh。如果这条计数常显，
   // 它会长期挂着一个 0；而一个长期不动的数字会让人不再看它，

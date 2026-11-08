@@ -494,7 +494,14 @@ window.__ModuleLoader__.load({
         if (this.disposed) return
         this.store.update((s) => { s.loading = true; s.error = null })
         try {
-          const payload = await this.request('/api/anima/state')
+          // 带上当前工作区坐标：宿主用 `?cwd=` 决定「按哪个工作区算注入」
+          // （index.mjs 的 state 路由读 searchParams.cwd），不带就是按「没有工作区
+          // 上下文」算 —— 于是设置页的注入解释面板会把一条正在生效的工作区记忆
+          // 标成 `no-workspace-context`，指着它说「这条没进去」。那正是这个项目
+          // 一直在防的形状：显示着查过了，其实查的不是同一个问题。
+          const cwd = String(this.store.getSnapshot().workspacePath ?? '').trim()
+          const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+          const payload = await this.request(`/api/anima/state${query}`)
           this.store.update((s) => { s.loading = false })
           this.applyState(payload)
         } catch (error) {
@@ -560,13 +567,18 @@ window.__ModuleLoader__.load({
 
       async loadWorkspace(path) {
         this.store.update((s) => { s.workspacePath = path; s.workspaceError = null; s.workspaceState = null })
-        if (!path) return
+        // 换了工作区就得重算一遍注入解释：宿主是按 `?cwd=` 判定「这条记忆在不在
+        // 当前工作区生效」的，坐标变了却还用上一次的 decisions，面板就会拿旧答案
+        // 解释新工作区。空路径也要重拉 —— 那是「回到全局」，decisions 同样要变。
         try {
-          const payload = await this.request(`/api/anima/workspace?workspacePath=${encodeURIComponent(path)}`)
-          this.store.update((s) => { s.workspaceState = payload })
+          if (path) {
+            const payload = await this.request(`/api/anima/workspace?workspacePath=${encodeURIComponent(path)}`)
+            this.store.update((s) => { s.workspaceState = payload })
+          }
         } catch (error) {
           this.store.update((s) => { s.workspaceError = messageOf(error) })
         }
+        await this.loadState()
       }
 
       async saveWorkspace(path, overrides) {
