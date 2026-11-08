@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.1'
+    const VERSION = '2.1.2'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -709,10 +709,16 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 导入第二步：把用户在预览里确认过（可能改过 layer）的那批写进缓冲区。 */
-      async commitImport(items) {
+      /** 导入第二步：把用户在预览里确认过（可能改过 layer）的那批写进缓冲区。
+       *
+       * `cwd` 必须跟 parse 一起带：workspace 级条目要在落库时记下「属于哪个工作区」，
+       * 否则它永远匹配不上、永远不注入。这里传的是**同一个**工作区坐标，
+       * 不让服务端自己去猜 —— 用户在预览里看到的和最终落库的是同一个范围。
+       */
+      async commitImport(items, cwd) {
+        const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
         try {
-          const payload = await this.request('/api/anima/memory/import/commit', {
+          const payload = await this.request(`/api/anima/memory/import/commit${query}`, {
             method: 'POST',
             body: { items }
           })
@@ -1278,6 +1284,7 @@ window.__ModuleLoader__.load({
       'imp.layerGlobal': '全局',
       'imp.layerWorkspace': '本工作区',
       'imp.layerToggle': '切换层级',
+      'imp.layerNoWorkspace': '先在设置页选定一个工作区，才能把这条限制在某一个工作区里',
       'imp.keep': '保留',
       'imp.drop': '不要',
       'imp.restore': '恢复',
@@ -1718,6 +1725,7 @@ window.__ModuleLoader__.load({
       'imp.layerGlobal': 'Global',
       'imp.layerWorkspace': 'This workspace',
       'imp.layerToggle': 'Toggle scope',
+      'imp.layerNoWorkspace': 'Pick a workspace in settings first — only then can this one be limited to a single workspace',
       'imp.keep': 'Keep',
       'imp.drop': 'Drop',
       'imp.restore': 'Restore',
@@ -3174,7 +3182,14 @@ window.__ModuleLoader__.load({
       const duplicates = Array.isArray(result?.duplicates) ? result.duplicates : []
       const overflow = Array.isArray(result?.overflow) ? result.overflow : []
       const keptCount = items.filter((_item, index) => dropped[index] !== true).length
-      const layerOf = (item, index) => layers[index] ?? item.layer ?? 'global'
+      // 没选定工作区时，把「建议成 workspace」的那条**显示成**全局：
+      // 宿主在没有 cwd 时也不会再建议 workspace（见 lib/import.mjs 的 suggestLayer），
+      // 但旧宿主仍可能这么建议，而预览里挂着一条「本工作区」却落不了库是骗人的。
+      const noWorkspaceSelected = !String(cwd ?? '').trim()
+      const layerOf = (item, index) => {
+        const chosen = layers[index] ?? item.layer ?? 'global'
+        return noWorkspaceSelected && chosen === 'workspace' ? 'global' : chosen
+      }
 
       const copyPrompt = async () => {
         setError(null)
@@ -3218,7 +3233,7 @@ window.__ModuleLoader__.load({
         if (payload.length === 0) return
         setBusy('commit')
         setError(null)
-        const response = await controller.commitImport(payload)
+        const response = await controller.commitImport(payload, cwd)
         setBusy('')
         if (response?.ok === false) {
           setError(response.error)
@@ -3252,6 +3267,9 @@ window.__ModuleLoader__.load({
 
       const layerButton = (item, index) => {
         const current = layerOf(item, index)
+        // 没选定工作区时「本工作区」置灰：点了也只会落成一条没有坐标的记录，
+        // 而那种记录永远匹配不上、永远不注入 —— 按钮亮着等于骗用户。
+        const noWorkspace = !String(cwd ?? '').trim()
         return e('span', { className: 'an-import-item-actions' },
           e('button', {
             type: 'button',
@@ -3262,7 +3280,8 @@ window.__ModuleLoader__.load({
           e('button', {
             type: 'button',
             className: `an-btn an-btn-sm${current === 'workspace' ? ' an-btn-primary' : ''}`,
-            title: t('imp.layerToggle'),
+            title: noWorkspace ? t('imp.layerNoWorkspace') : t('imp.layerToggle'),
+            disabled: noWorkspace,
             onClick: () => setLayers((prev) => ({ ...prev, [index]: 'workspace' }))
           }, t('imp.layerWorkspace'))
         )
@@ -3364,7 +3383,7 @@ window.__ModuleLoader__.load({
           if (tooLong.length > 0) {
             tooLongBlock = e('div', { className: 'an-import-summary' },
               t('imp.tooLongTitle'),
-              e('div', null, t('imp.tooLongHint').split('{max}').join(String(500)))
+              e('div', null, t('imp.tooLongHint').split('{max}').join(String(spec.maxText ?? 500)))
             )
           }
           let duplicatesBlock = null

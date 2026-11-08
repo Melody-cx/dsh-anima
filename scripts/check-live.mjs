@@ -369,6 +369,31 @@ console.log('\n[导入外部记忆的入口]')
     }
   })
 
+  // 没带工作区坐标的这次解析里，「这个项目用 pnpm」不能被建议成 workspace：
+  // 那样落库就是一条没有 cwd 的死记录（永远匹配不上、永远不注入）。
+  check('没带 cwd 时不给 workspace 建议（死条比建议全局更糟）', () => {
+    const hint = (parsed.body?.items ?? []).find((it) => String(it.text).includes('pnpm'))
+    if (!hint) throw new Error('「这个项目用 pnpm」这条没被切出来，用例前提不成立')
+    if (hint.layer === 'workspace') {
+      throw new Error('没带 cwd 却建议了 workspace —— 这条落库后永远不注入')
+    }
+  })
+
+  // 带上工作区坐标时，同样的措辞就该建议 workspace。
+  const parsedWithCwd = await post(
+    `/api/anima/memory/import/parse?cwd=${encodeURIComponent('D:\\\\deepseek工作区')}`,
+    { text: '- 这个项目用 pnpm，不要用 npm。' }
+  )
+
+  check('带 cwd 时同样的措辞建议 workspace（否则「本工作区」永远用不上）', () => {
+    if (parsedWithCwd.status !== 200) {
+      throw new Error(`实际 ${parsedWithCwd.status}：${parsedWithCwd.text.slice(0, 160)}`)
+    }
+    const item = (parsedWithCwd.body?.items ?? [])[0]
+    if (!item) throw new Error('没切出条目')
+    if (item.layer !== 'workspace') throw new Error(`应建议 workspace，实际 ${item.layer}`)
+  })
+
   // 必然被凭据闸门拦下：断言「拦得住」，同时把返回形态钉死。
   const committed = await post('/api/anima/memory/import/commit', {
     items: [{ text: 'api_key = sk-abcdefghijklmnopqrstuvwxyz012345', layer: 'global' }]
@@ -409,6 +434,27 @@ console.log('\n[导入外部记忆的入口]')
     if (empty.status !== 400) throw new Error(`实际 ${empty.status}：${empty.text.slice(0, 120)}`)
     if (!String(empty.body?.error ?? '').includes('没有要导入的条目')) {
       throw new Error(`400 的 body 不是本插件的文案：${empty.text.slice(0, 120)}`)
+    }
+  })
+
+  // workspace 级提交没带 cwd 时应当**逐条拒绝**，而不是静默降级成全局：
+  // 降级会改变这条记忆生效的范围，那是用户的决定。这条同样是「你重启了吗」的
+  // 探测器 —— 旧宿主会照收并落一条没有 cwd 的记录（零副作用，因为会被拒）。
+  const noCwd = await post('/api/anima/memory/import/commit', {
+    items: [{ text: '导入探针：没有坐标的工作区条目', layer: 'workspace' }]
+  })
+
+  check('workspace 级提交没带 cwd 时逐条拒绝，不静默降级成全局', () => {
+    if (noCwd.status !== 200) throw new Error(`实际 ${noCwd.status}：${noCwd.text.slice(0, 160)}`)
+    if (!Array.isArray(noCwd.body?.added)) throw new Error('缺 added 数组（宿主仍在跑旧代码？）')
+    if (noCwd.body.added.length !== 0) {
+      throw new Error(`没有 cwd 却收下了一条 workspace 级记录：${JSON.stringify(noCwd.body.added)}`)
+    }
+    if (noCwd.body.rejected?.length !== 1) {
+      throw new Error(`应逐条拒绝 1 条，实际 ${JSON.stringify(noCwd.body.rejected)}`)
+    }
+    if (!String(noCwd.body.rejected[0]?.error ?? '').includes('工作区')) {
+      throw new Error(`拒绝理由没说清是缺工作区：${noCwd.body.rejected[0]?.error}`)
     }
   })
 }

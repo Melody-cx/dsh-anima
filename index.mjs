@@ -27,6 +27,7 @@ import { existsSync } from 'node:fs'
 import {
   DEFAULT_CONFIG,
   FIELD_LIMITS,
+  MEMORY_TEXT_MAX,
   OVERRIDABLE_FIELDS,
   formatFieldErrors,
   mergePersona,
@@ -1506,7 +1507,11 @@ function registerRoutes(ctx) {
         memoryImport: {
           prompt: IMPORT_PROMPT_FULL,
           maxItems: IMPORT_MAX_ITEMS,
-          maxSource: IMPORT_MAX_SOURCE
+          maxSource: IMPORT_MAX_SOURCE,
+          // 单条正文上限。以前前端把它硬编码成 500，与 lib/config.mjs 里的
+          // MEMORY_TEXT_MAX 是两份独立的数字 —— 改了一边另一边就撒谎，
+          // 而且是「提示语说 500，实际闸门是别的值」这种最难被发现的偏差。
+          maxText: MEMORY_TEXT_MAX
         },
         workspaces: workspaceList(ctx)
       })
@@ -2057,16 +2062,38 @@ function registerRoutes(ctx) {
         return
       }
 
+      // cwd 与 parse 同一口径：走查询参数，**绝不信 body 里的 item.cwd**。
+      // 这条曾经是一个静默的功能性 bug（2026-11-08）：parse 阶段把 cwd 写进了
+      // record，commit 阶段却又 makeCandidate 了一次、没带 cwd ⇒ 落库记录没有
+      // cwd 字段 ⇒ matchLayer 判 workspace-scope-unknown ⇒ 用户明明采纳了，
+      // 这条记忆却永远不会被注入，而界面上一切正常。
+      // 为什么不信 item.cwd：提交阶段的输入来自网络请求，可以伪造；而 cwd 决定
+      // 「这条记忆在哪些工作区生效」，让请求方自报坐标等于让它自己划范围。
+      const commitCwd = String(new URL(req.url, 'http://localhost').searchParams.get('cwd') ?? '').trim()
+
       const added = []
       const rejected = []
       for (const item of items) {
+        // layer 由用户在预览里决定（可能被改过），这里照收；但 workspace 级
+        // 必须有坐标可挂，否则收下的就是一条永远不会注入的死记录。逐条拒绝、
+        // 说清原因，比静默降级成全局诚实 —— 降级会改变它生效的范围，那是
+        // 用户的决定，不是服务端的。
+        const wantedLayer = item?.layer === 'workspace' ? 'workspace' : 'global'
+        if (wantedLayer === 'workspace' && !commitCwd) {
+          rejected.push({
+            text: String(item?.text ?? ''),
+            error: '这条选了「本工作区」，但这次提交没带工作区坐标（当前没选定工作区），所以没有入库。请先在设置页选一个工作区，或把它改成「全局」再导入。'
+          })
+          continue
+        }
         // 重新走一遍 makeCandidate：提交阶段的输入来自网络请求，不能假定它还是
         // 解析阶段那批东西（用户可以在预览里改 layer，也可以在控制台里直接发请求）。
         const created = makeCandidate({
           text: item?.text,
-          layer: item?.layer,
+          layer: wantedLayer,
           source: 'import',
-          note: item?.note
+          note: item?.note,
+          cwd: wantedLayer === 'workspace' ? commitCwd : ''
         })
         if (!created.ok) {
           rejected.push({ text: String(item?.text ?? ''), error: created.error })

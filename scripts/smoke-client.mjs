@@ -1877,6 +1877,16 @@ await test('导入面板：解析 → 逐条预览 → 丢弃的不提交、改�
   assert.equal(payload.items[0].text, IMPORT_PARSE_PAYLOAD.items[1].text)
   assert.equal(payload.items[0].layer, 'workspace')
 
+  // 提交也必须带上工作区坐标：workspace 级条目要在落库时记下属于哪个工作区，
+  // 否则它永远匹配不上、永远不注入，而界面上一切正常（2026-11-08 的真实 bug）。
+  const commitCall = fetchCalls.find((c) => c.url.includes('/memory/import/commit'))
+  assert.ok(commitCall, '没有调用提交路由')
+  assert.ok(
+    commitCall.url.includes(encodeURIComponent(WORKSPACE_PATH)),
+    `提交没带 cwd：${commitCall.url}`
+  )
+  assert.equal(payload.items[0].cwd, undefined, 'cwd 只能走查询参数，不该混进 body')
+
   // 成功提示必须报出**实际条数**，不能是 0。
   //
   // 这条断言是补上一个真实漏网 bug 的：宿主曾经回 `added: <数字>`，而这里按
@@ -1957,6 +1967,78 @@ await test('导入面板：老宿主不下发 memoryImport 时整个入口消失
   } finally {
     STATE_PAYLOAD.memoryImport = saved
     await controller.loadState()
+    await flush()
+  }
+})
+
+await test('导入面板：没选定工作区时「本工作区」按钮置灰，且预览里挂着的 workspace 会显示成全局', async () => {
+  // 为什么要有这条：没 cwd 时仍能点「本工作区」，落库就是一条没有坐标的记录，
+  // 它永远匹配不上、永远不注入 —— 按钮亮着等于骗用户。
+  //
+  // 注意 workspacePath 是 store 里的会话状态，`applyState` 并不写它（只有
+  // `loadWorkspace` 会写）。所以这里必须走真实用户路径：把工作区选择器选成空。
+  const memTitle = dict.zh['mem.title']
+  try {
+    await controller.loadWorkspace('')
+    await flush()
+    // 不直接读 controller.store（冒烟里的 controller 不是真实类实例）：
+    // 用界面反推出的「本工作区按钮是否可点」作前置校验才有意义 —— 若前置没成立，
+    // 下面那条 disabled 断言会因为别的原因失败，反而看不出问题。
+
+    const nodes = () => cardNodes(lastTree, memTitle, 'mem')
+    const findButton = (label) => elements(nodes(), 'button').find((n) => n.props.children === label)
+
+    // 展开面板（前面用例可能已经收起）
+    const entry = findButton(dict.zh['imp.open'])
+    if (entry) {
+      entry.props.onClick()
+      await flush()
+    }
+    const panelText = () => elements(nodes(), 'textarea').find((n) => n.props.id === 'an-import-text')
+    assert.ok(panelText(), '面板没展开')
+
+    panelText().props.onChange({ target: { value: '另一段粘贴内容' } })
+    await flush()
+    const parseButton = findButton(dict.zh['imp.parse'])
+    assert.ok(parseButton, '缺解析按钮')
+    parseButton.props.onClick()
+    await flush()
+
+    // 预览里第二条本该是 workspace，但没 cwd ⇒ 只能显示成全局
+    assert.ok(
+      allText(nodes()).includes(IMPORT_PARSE_PAYLOAD.items[1].text),
+      '第二条没进预览'
+    )
+    const wsButton = elements(nodes(), 'button').find(
+      (n) => n.props.children === dict.zh['imp.layerWorkspace']
+    )
+    assert.ok(wsButton, '缺「本工作区」按钮')
+    assert.equal(wsButton.props.disabled, true, '没工作区时「本工作区」不该可点')
+    assert.ok(
+      String(wsButton.props.title ?? '').includes(dict.zh['imp.layerNoWorkspace']),
+      `置灰按钮要说清原因：${wsButton.props.title}`
+    )
+
+    // 提交：既然没有坐标，就只能提交全局级别 —— 不能带着 workspace 上去被拒
+    commitBodies.length = 0
+    const commitButton = findButton(dict.zh['imp.commit'])
+    assert.ok(commitButton, '缺提交按钮')
+    commitButton.props.onClick()
+    await flush()
+    assert.equal(commitBodies.length, 1)
+    for (const item of commitBodies[0].items) {
+      assert.equal(item.layer, 'global', `没坐标却提交了 workspace 级：${JSON.stringify(item)}`)
+    }
+    const call = fetchCalls.filter((c) => c.url.includes('/memory/import/commit')).pop()
+    assert.ok(call, '没有调用提交路由')
+    assert.equal(
+      call.url.includes('cwd='),
+      false,
+      `没选定工作区时不该带空的 cwd 参数：${call.url}`
+    )
+  } finally {
+    // 恢复成有工作区的状态：后面还有用例要靠它
+    await controller.loadWorkspace(WORKSPACE_PATH)
     await flush()
   }
 })

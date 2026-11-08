@@ -2060,6 +2060,45 @@ test('suggestLayer：两者都有或都没有都落全局（默认层不能是�
   assert.ok(none.reason, '必须给理由，否则用户不知道它凭什么这么判')
 })
 
+test('suggestLayer：没有工作区坐标时不给 workspace 建议（死条比建议全局更糟）', () => {
+  // 回归：2026-11-08 之前的实现只看措辞、不看有没有 cwd，于是「本项目用 pnpm」
+  // 会被建议成 workspace，落库时 cwd 是空串 ⇒ 记录没有 cwd ⇒ matchLayer 判
+  // workspace-scope-unknown ⇒ 用户采纳了却永远不注入，界面上一切正常。
+  const r = suggestLayer('这个项目里用 pnpm 管理依赖', { hasCwd: false })
+  assert.equal(r.layer, 'global', '没坐标就不该建议 workspace')
+  assert.equal(r.confidence, 'low', '降级成全局时不能给高置信')
+  assert.ok(r.reason.includes('工作区'), `理由要说清是缺工作区：${r.reason}`)
+  // 有坐标时照旧建议 workspace，且置信度不变
+  const ok = suggestLayer('这个项目里用 pnpm 管理依赖', { hasCwd: true })
+  assert.equal(ok.layer, 'workspace')
+  assert.equal(ok.confidence, 'high')
+})
+
+test('parseImport：被丢弃的记忆不参与查重（否决过的不该永久挡住重导）', () => {
+  // 回归：指纹表原来不分 status/state，一条已经 discarded 或被 dropped 的记忆
+  // 会让用户永远重导不进来，而界面上只显示「重复」，看不出原因。
+  const text = '结论先行，不要绕弯子。'
+  const dropped = parseImport(`- ${text}`, [{ text, status: 'discarded' }])
+  assert.equal(dropped.counts.duplicates, 0, 'discarded 不该算重复')
+  assert.equal(dropped.counts.accepted, 1)
+
+  const ghost = parseImport(`- ${text}`, [{ text, state: 'dropped' }])
+  assert.equal(ghost.counts.duplicates, 0, 'state=dropped 不该算重复')
+  assert.equal(ghost.counts.accepted, 1)
+
+  // 已经采纳过的仍然算重复 —— 这条行为不能一起放宽掉
+  const alive = parseImport(`- ${text}`, [{ text, status: 'adopted' }])
+  assert.equal(alive.counts.duplicates, 1, '已采纳的仍要挡住重导')
+})
+
+test('splitImportedText：无空格的列表项也单独成条', () => {
+  // 回归：LIST_ITEM 原来要求列表符号后必须跟空白，`-没有空格的行` 会被并进
+  // 上一行，切出一条「1、xxx -没有空格的行」的缝合怪。
+  const out = splitImportedText('1、这个项目里用 pnpm 管理依赖\n-没有空格的补充说明')
+  assert.equal(out.length, 2, `应切成两条：${JSON.stringify(out)}`)
+  assert.ok(!out.some((s) => s.includes('pnpm 管理依赖 -')), '两条不该被缝在一起')
+})
+
 test('parseImport：一条凭据命中即整条拦下，且不进 items', () => {
   const r = parseImport('- 我的 key 是 sk-abcdefghijklmnopqrstuvwxyz012345', [])
   assert.equal(r.counts.blocked, 1)

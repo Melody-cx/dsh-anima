@@ -1473,8 +1473,13 @@ await test('导入提交的 added 是记录数组，与 rejected 同形（不是
   // `response.added.length` 读 ⇒ 成功提示恒显示「已导入 0 条」。冒烟夹具当时手写成
   // 数组，正好把服务端与客户端的不一致掩盖过去。所以这里必须**真跑路由**、
   // 断言的是路由真返回的形状，而不是我们自己塞给客户端的夹具。
+  // 第二件事（2026-11-08 补）：workspace 级的条目必须真的带上 cwd 才能落库。
+  // 原先这条用例不带 cwd、也不查 cwd，于是「commit 阶段把 cwd 丢了 ⇒ 记录永远
+  // 匹配不上 ⇒ 永远不注入」这个 bug 一路跑绿。
+  const commitCwd = 'D:\\deepseek工作区'
   const { status, payload } = await callRoute(ctx._routes.get('/api/anima/memory/import/commit'), {
     method: 'POST',
+    url: `/api/anima/memory/import/commit?cwd=${encodeURIComponent(commitCwd)}`,
     body: {
       items: [
         { text: '导入用例的全局条目', layer: 'global' },
@@ -1493,12 +1498,50 @@ await test('导入提交的 added 是记录数组，与 rejected 同形（不是
     assert.equal(record.source, 'import')
   }
   assert.equal(payload.added[1].layer, 'workspace', '用户改过的层级应原样落库')
+  // 关键断言：workspace 级必须留下坐标，global 级不该留（留了会把它绑死在某个目录上）。
+  assert.ok(payload.added[1].cwd, 'workspace 级记录没有 cwd ⇒ 它永远不会被注入')
+  assert.equal(payload.added[1].cwd, 'd:/deepseek工作区', 'cwd 应归一化后落库')
+  assert.ok(!payload.added[0].cwd, 'global 级不该带 cwd')
   // 落库的确实是 pending：待审缓冲区里能找到它们，记忆段里找不到。
   const state = await callRoute(ctx._routes.get('/api/anima/state'))
   const found = state.payload.memories.pending.filter((m) => m.source === 'import')
   assert.ok(found.length >= 2, '导入的记录应进待审缓冲区')
   assert.equal(ctx._sections.get('anima:memory').text({}).includes('导入用例的全局条目'), false,
     '未裁决的导入候选不该进提示词')
+})
+
+await test('导入提交没带 cwd 时，workspace 级逐条拒绝而不静默降级成全局', async () => {
+  // 静默降级会改变这条记忆生效的范围 —— 那是用户的决定，不是服务端的。
+  // 收下一条没有坐标的 workspace 记录更糟：它看起来成功了，实际永远不注入。
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/memory/import/commit'), {
+    method: 'POST',
+    body: {
+      items: [
+        { text: '没坐标也给出全局条目', layer: 'global' },
+        { text: '没坐标的工作区条目', layer: 'workspace' }
+      ]
+    }
+  })
+  assert.equal(status, 200, '逐条拒绝，不整批 400')
+  assert.equal(payload.added.length, 1, '只有全局那条能进')
+  assert.equal(payload.added[0].layer, 'global')
+  assert.equal(payload.rejected.length, 1)
+  assert.match(payload.rejected[0].error, /工作区/, '被拒原因要说清是缺工作区坐标')
+})
+
+await test('导入提交不信 body 里的 item.cwd（只能由查询参数决定范围）', async () => {
+  // body 可以伪造；cwd 决定「这条记忆在哪些工作区生效」，让请求方自报坐标
+  // 等于让它自己划范围。
+  const { status, payload } = await callRoute(ctx._routes.get('/api/anima/memory/import/commit'), {
+    method: 'POST',
+    url: '/api/anima/memory/import/commit',
+    body: {
+      items: [{ text: '伪造工作区坐标的条目', layer: 'workspace', cwd: 'D:\\evil' }]
+    }
+  })
+  assert.equal(status, 200)
+  assert.equal(payload.added.length, 0, '没有查询参数就不该收下 workspace 级')
+  assert.equal(payload.rejected.length, 1)
 })
 
 await test('导入提交对无效条目逐条拒绝，不整批失败', async () => {
