@@ -2883,6 +2883,24 @@ await test('分区导航：一直吸在顶部（滚下去还能切栏），底�
   assert.ok(/var\(--dsw-alias-/.test(bg), `吸顶栏底色没走宿主 token：${bg}`)
 })
 
+await test('吸底保存栏：把内边距一起抵消掉，滚到底时贴着容器底（不悬空）', () => {
+  // 实测过：脏态滚到底，栏底停在 752、滚动容器底 800，中间露出 48px 正文 ——
+  // 就是宿主 `.options` 的 padding-bottom:24px 加上 `.an-root` 自己的 24px。
+  // sticky 的 bottom:0 贴的是滚动容器的 padding box，所以必须用负 bottom 抵消。
+  //
+  // 这条只断「规则里写了负的 bottom 与负 margin」，不断具体像素 —— 源码里没有
+  // 布局引擎，量不出真实几何（那是 _tmp/visui/geo.cjs 干的活）。但它能挡住
+  // 「哪天有人手滑把这两条负值删掉、退回悬空 48px」。
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  const rule = css.match(/\.an-savebar\[data-an-dirty="true"\]\{([^}]*position:sticky[^}]*)\}/)
+  assert.ok(rule, '找不到脏态吸底保存栏的 sticky 规则')
+  const bottom = (rule[1].match(/\bbottom:(-?[\d.]+px)/) || [])[1]
+  assert.ok(bottom, `吸底栏没写 bottom：${rule[1]}`)
+  assert.ok(parseFloat(bottom) < 0, `吸底栏 bottom 不是负值，会悬空在容器底上方：${bottom}`)
+  const mb = (rule[1].match(/margin-bottom:(-?[\d.]+px)/) || [])[1]
+  assert.ok(mb && parseFloat(mb) < 0, `吸底栏没抵消内边距占位：margin-bottom=${mb}`)
+})
+
 await test('分区导航：键盘左右箭头能换栏（八条：←/→ 循环、Home/End 到两端、方向键不跳焦点、无 document 时不抛）', () => {
   // 这一组此前零覆盖：grep ArrowRight/onKeyDown/Home/End 在 scripts/ 下命中 0。
   // 键盘导航是 2.1.3 加的，加了四个月没有一个用例看过它。

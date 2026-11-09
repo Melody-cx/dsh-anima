@@ -9,6 +9,35 @@
 
 ---
 
+## [2.1.16] - 2026-11-09
+
+### 修复
+
+- **脏态保存栏悬空 48px。** 2.1.15 恢复分区导航吸顶后，用户 m04712 指出「位置有问题」。
+  实测：滚到底时栏底停在 752、滚动容器底 800，中间露出 48px 正文，像一条没落下去的浮条。
+  根因是 sticky 的 `bottom:0` 贴的是**滚动容器的 padding box**，而栏下面压着两层内边距：
+  宿主 `.options` 的 `padding-bottom:24px` 加 `.an-root` 自己的 `padding-bottom:24px`。
+  改成 `bottom:-24px;margin-bottom:-48px`，两层占位一起抵消。实测 gap 0、
+  最后字段底 712 vs 栏顶 748，不遮挡任何控件。两个数耦合宿主内边距，宿主改 padding 需同步调。
+
+### 验证
+
+- 无头 Edge 实测（800×800 复刻外壳）：`geo.cjs` 脏态 `{"barTop":748,"barBottom":800,"gapToViewport":0,"gapToOptsBottom":0}`；
+  `sc4.cjs` `{"barTop":748,"barBottom":800,"maxFieldBottom":712,"overlap":0,"gapToBottom":0}`；
+  `cover2.cjs` 亮/暗两套均 `covered:0`，栏底亮 `rgb(255,255,255)`、暗 `rgb(44,44,46)`（与面板同色，无色块）。
+- 新增 smoke-client 用例「吸底保存栏：把内边距一起抵消掉，滚到底时贴着容器底（不悬空）」，
+  断规则里写了负 `bottom` 与负 `margin-bottom`。
+  **反向验证**：把这两个负值改回 `bottom:0` → 恰好这一条 FAIL、其余 81 绿；恢复后 82 项全绿。
+- 五套：verify-core 254 / smoke-host 113 / smoke-client **82 项** / check-client-i18n zh/en 对称（301 字面 key + 5 前缀）
+  / check-live `http://127.0.0.1:52052` 38 项。
+
+### 没做
+
+- 保存栏的负值是按宿主当前 `padding-bottom:24px` 与 `.an-root` 的 24px 算出来的；
+  宿主若哪天改这两处内边距，需要用 `_tmp/visui/geo.cjs` 重新量一次（没有自动探测办法）。
+- 宿主真窗口仍未截图确认（`curl http://127.0.0.1:52052/` 返回 401 `dsh web authentication required`），
+  全部数字来自按宿主 CSS 复刻的 800×800 外壳。
+
 ## [2.1.15] - 2026-11-09
 
 ### 修复

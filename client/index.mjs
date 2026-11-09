@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.15'
+    const VERSION = '2.1.16'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -871,7 +871,14 @@ window.__ModuleLoader__.load({
       '.an-savebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:0}',
       // 有未保存改动时才吸底，这时才需要底色把滚动内容挡住、需要一条顶线分隔。
       '.an-savebar[data-an-dirty="true"]{padding:10px 14px;border-top:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
-      '.an-savebar[data-an-dirty="true"]{position:sticky;bottom:0;z-index:20;box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
+      // 吸底要贴到底，不能悬空。sticky 的 bottom:0 贴的是**滚动容器的 padding box**，
+      // 而这条栏下面还压着两层内边距：宿主 `.options` 的 padding-bottom:24px，加上
+      // `.an-root` 自己的 padding-bottom:24px。实测脏态滚到底时栏底停在 752、
+      // 容器底 800，中间露出 48px 正文，看起来像一条没落下去的浮条。
+      // 所以 bottom 推下去 24 抵消宿主那层，再用 margin-bottom:-48px 把两层占位
+      // 一起收掉。这两个数耦合宿主面板内边距（2026-11-09 实测 24+24），宿主若改
+      // padding 要同步调这里。实测该组合 gap 0、最后字段底 712 vs 栏顶 748，不遮挡。
+      '.an-savebar[data-an-dirty="true"]{position:sticky;bottom:-24px;margin-bottom:-48px;z-index:20;box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
       '.an-savebar-text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
       '.an-savebar-text-dirty{color:var(--dsw-alias-state-warn-label,#d48806)}',
       // 卡片原来是「白底 + 1px 边框 + 8px 圆角 + 16px 内边距」的盒子。宿主亮色下
