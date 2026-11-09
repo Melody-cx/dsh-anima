@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.8'
+    const VERSION = '2.1.9'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -920,6 +920,10 @@ window.__ModuleLoader__.load({
       '.an-textarea-short{min-height:56px}',
       '.an-input:focus,.an-textarea:focus,.an-select:focus{outline:none;border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, transparent)}',
       '.an-select option{color:var(--dsw-alias-label-primary)}',
+      // 交互反馈统一 120ms：只过渡颜色/背景/边框这类不触发布局的属性。
+      // 少了它，hover 会从无到有硬切一下，鼠标扫过一排示例时像在闪。
+      '.an-btn,.an-chip,.an-card-toggle,.an-block-toggle,.an-sectnav-tab,.an-quick-toggle,.an-input,.an-textarea,.an-select,.an-input-color{transition:color .12s ease,background-color .12s ease,border-color .12s ease,text-decoration-color .12s ease}',
+      '@media (prefers-reduced-motion:reduce){.an-btn,.an-chip,.an-card-toggle,.an-block-toggle,.an-sectnav-tab,.an-quick-toggle,.an-input,.an-textarea,.an-select,.an-input-color{transition:none}}',
       // 键盘焦点必须看得见。原来全文件只有输入框的 :focus（鼠标点进去也有），
       // 按钮、tab、复选项一律没有焦点环 —— P4 加了分区 tab 的左右方向键漫游之后，
       // 键盘用户按方向键能切换分区，但看不出焦点停在哪一栏。
@@ -1054,6 +1058,7 @@ window.__ModuleLoader__.load({
       // 关掉总开关时预览保留静态圆环：配色仍然看得见，但因为不动了，不会让人误以为还开着。
       '.an-trail-preview[data-an-trail-static="on"] .an-trail-layer{animation:none}',
       '.an-input-color{flex:0 0 auto;width:38px;height:28px;padding:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;cursor:pointer}',
+      '.an-input-color:hover{border-color:var(--dsw-alias-border-l4,var(--dsw-alias-border-l2))}',
       // ── 卡片折叠 ──
       '.an-card-aside{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}',
       // 收起/展开是每张卡都有的重复控件，描边会变成九个小方框；只留文字。
@@ -1083,6 +1088,9 @@ window.__ModuleLoader__.load({
       // ── 输入框快捷开关 ──
       '.an-quick-toggle{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:6px;min-height:28px;overflow:hidden;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}',
       '.an-quick-toggle[data-enabled="true"]{color:var(--dsw-alias-brand-primary)}',
+      // 它是这一排控件里唯一没有 hover 回执的（audit 实测），鼠标扫过时只有光标变化。
+      // 给底色而非改边框：边框在 1px 上变化太小，看不出是「能按」。
+      '.an-quick-toggle:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
       '.an-quick-toggle:disabled{cursor:wait;opacity:.6}',
       '.an-quick-toggle-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--dsw-alias-label-tertiary)}',
       '.an-quick-toggle[data-enabled="true"] .an-quick-toggle-dot{background:var(--an-toggle-on,#22c55e);animation:an-status-pulse 1.8s ease-in-out infinite}',
@@ -1124,6 +1132,9 @@ window.__ModuleLoader__.load({
       '.an-gap12wrap{display:flex;flex-wrap:wrap;gap:12px}',
       '.an-rowcenter{display:flex;gap:8px;align-items:center}',
       '.an-rowend{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}',
+      // .an-field 自带 margin-bottom:14px 是给「上下堆叠」准备的。放进 flex-end 的行里，
+      // 这段外边距会被算进该项的对齐框，按钮就贴到底边、比输入框低 42px，看着像飘着的。
+      '.an-rowend > .an-field{margin-bottom:0}',
       '.an-rowgap8mt10{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}',
       '.an-badgewrap{display:flex;gap:6px;flex-wrap:wrap}',
       '.an-wrap{display:flex;flex-wrap:wrap}',
@@ -1136,6 +1147,11 @@ window.__ModuleLoader__.load({
       '.an-flex200{flex:1 1 200px}',
       '.an-flex140{flex:1 1 140px}',
       '.an-flex260{flex:2 1 260px}',
+      // 同上，但基准 0：只参与分配剩余空间，基础尺寸不参与折行计算。
+      // 「存为预设」那行两个字段 + 按钮合计 563px 超过内容区 540px，用 260/200
+      // 这种带 basis 的写法按钮必然掉到第二行单独靠左，换成 basis 0 才能同行。
+      '.an-flexfill1{flex:1 1 0;min-width:0}',
+      '.an-flexfill2{flex:2 1 0;min-width:0}',
       '.an-flexfill{flex:1 1 0}',
       // 页头自己补下边距：它下面紧接分区导航，两者只隔 .an-root 的 20px，
       // 视觉上标题和导航会粘成一块。
@@ -4743,7 +4759,7 @@ window.__ModuleLoader__.load({
           e('div', { className: 'an-mt16' },
             e('div', { className: 'an-subhead' }, t('preset.saveTitle')),
             e('div', { className: 'an-row an-rowgap8mt10' },
-              e('div', { className: 'an-field an-flex200' },
+              e('div', { className: 'an-field an-flexfill1' },
                 e('input', {
                   className: 'an-input',
                   type: 'text',
@@ -4753,7 +4769,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setPresetForm((prev) => ({ ...prev, name: event.target.value }))
                 })
               ),
-              e('div', { className: 'an-field an-flex260' },
+              e('div', { className: 'an-field an-flexfill2' },
                 e('input', {
                   className: 'an-input',
                   type: 'text',
