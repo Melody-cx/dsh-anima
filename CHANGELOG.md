@@ -9,6 +9,40 @@
 
 ---
 
+## [2.1.11] - 2026-11-09
+
+### 修复
+
+- 提示、示例、字符计数这一族文字在白底上的对比度不达标。实测 tertiary = `rgb(129,133,140)`，
+  对比度 **3.71 : 1**；它们是 11–12px 的正文字号，WCAG AA 1.4.3 对这类文字要求 4.5 : 1，
+  而同一页的 `.an-subhead`（secondary）是 5.80 : 1。现在整族统一提到 secondary，实测 **5.80 : 1**。
+  涉及 14 条规则：`.an-card-desc` / `.an-hintline` / `.an-fill-label` / `.an-chip` /
+  `.an-item-meta` / `.an-empty` / `.an-import-summary` / `.an-kv dt` / `.an-audit-arrow` /
+  `.an-recent-caret` / `.an-trail-preview-label` / `.an-card-toggle` / `.an-block-toggle` / `.an-charcount`。
+  字号、位置、元素数量一律未动 —— 收不收是用户的选择，不该拿可读性去换。
+- 输入框占位符此前没有设色，走浏览器默认 `rgb(117,117,117)`，在 `bg-module-platform` 底上
+  实测 **4.26 : 1**，13px 文字同样低于 4.5 : 1。新增
+  `.an-input::placeholder,.an-textarea::placeholder{color:var(--dsw-alias-label-secondary);opacity:1}`，
+  实测升到 **5.36 : 1**（底色 #f5f6f7）。
+
+### 没做
+
+- 13px 那档没压。宿主的字号直方图（从 `app.asar` 的 `theme.js` 数出来）是 14/12/16/13/11/24/20，
+  13px 是宿主自己也在用的档位，不是自造；而 `.an-sectnav-tab` 与主按钮用 13px 是有意的层级。
+- 页头占位没动。实测 `options` 起点 54 → 页头 58（高 40）→ 分区导航 118（36）→ 变更记录 174（32）
+  → 第一张卡 226；746px 视口里 226px 是页头 + 导航 + 变更记录。要压只能删这三者之一，
+  那属于「少功能」，不是这次的范围。
+
+### 验证
+
+- 亮色对比度（`_tmp/visui/contrast.cjs`，无头 Edge 读 computed）：提示族 3.71 → **5.80**；
+  占位符 4.26 → **5.36**；`.an-subhead` 5.80；`.an-card-title` 18.90 不变。
+- 暗色对比度（`_tmp/visui/cdk.cjs`）：提示族 **9.25**、字段标签 **13.34**、输入框正文 **11.57**，
+  全部随 `--dsw-alias-*` 自动切换，没有额外写暗色规则。
+- 四套测试：`verify-core` PASSED all 254 / `smoke-host` PASSED all 113 /
+  `smoke-client` 通过 77 项 / `check-client-i18n` zh=299 字面 key + 5 前缀 key 对称。
+- `node scripts/check-live.mjs http://127.0.0.1:52052` → PASSED all 38。
+
 ## [2.1.10] - 2026-11-09
 
 ### 修复

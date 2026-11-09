@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.10'
+    const VERSION = '2.1.11'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -892,7 +892,7 @@ window.__ModuleLoader__.load({
       // 是 13px，同一张卡里六个同级小节实测出了两种大小（12/13），看起来像分属两层。
       // 现在两边同用 .an-subhead：层级靠「字号 12 < 卡片标题 14」拉开，不靠彼此互相比。
       '.an-subhead{font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--dsw-alias-label-secondary)}',
-      '.an-card-desc{margin:4px 0 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}',
+      '.an-card-desc{margin:4px 0 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
       '.an-field{margin-bottom:14px}',
       '.an-field:last-child{margin-bottom:0}',
       // 标签原来是 13px/500，比 12px 的正文大一档却更淡，读起来像「不太重要的提示」。
@@ -902,7 +902,12 @@ window.__ModuleLoader__.load({
       // 于是所有长在字段外面的提示（页头副标题、体检说明、巡逻/回扫的「还没查过」、
       // 工作区的「没选项目时…」、预设的保存提示……）全部没有样式，继承成 16px 纯黑，
       // 比正文还大。截图里那句「没选项目时，下面显示的是全局设置」就是这个样子。
-      '.an-hintline{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      //
+      // 颜色用 secondary 而不是 tertiary：白底实测 tertiary = rgb(129,133,140)，对比度 3.71:1，
+      // 11–12px 的正文低于 WCAG AA 的 4.5:1；同一页 .an-subhead（secondary）是 5.80:1。
+      // 提示、示例、字符计数这一族全部提到 secondary —— 它们只是「补充」，但首先得读得清。
+      // 只调颜色：字号、位置、元素数量一律不动（收不收是用户的选择，不是可读性的代价）。
+      '.an-hintline{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary)}',
       '.an-field .an-hintline{margin-top:4px}',
       '.an-hintrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:4px}',
       '.an-hintrow > .an-hintline{flex:1;min-width:0;margin:0}',
@@ -915,6 +920,10 @@ window.__ModuleLoader__.load({
       // 比卡片底色深一档，于是输入区自己浮出来，边框可以退成透明。
       '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid transparent;border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
       '.an-input:hover,.an-textarea:hover,.an-select:hover{border-color:var(--dsw-alias-border-l2)}',
+      // 占位符此前没设色，走浏览器默认 rgb(117,117,117)，在 module-platform 底（#f5f6f7）上
+      // 实测 4.26:1 —— 13px 文字低于 WCAG AA 的 4.5:1，而且默认灰不带主题感。
+      // 改成 label-tertiary 之外的一档：secondary 在这个底色上刚够（见下方注释的数字）。
+      '.an-input::placeholder,.an-textarea::placeholder{color:var(--dsw-alias-label-secondary);opacity:1}',
       '.an-textarea{min-height:88px;resize:vertical}',
       // 短字段（上限 ≤300）用两行高度：三条并排时省下的正是纵向空间。
       '.an-textarea-short{min-height:56px}',
@@ -932,7 +941,7 @@ window.__ModuleLoader__.load({
       // 「一键填入」按钮组 —— 旧版这里是下拉框，档位改成一段现成的说法之后，
       // 用一排小按钮比下拉更容易发现「原来还可以填这个」。
       '.an-fill{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;font-size:11px}',
-      '.an-fill-label{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);margin-right:2px}',
+      '.an-fill-label{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary);margin-right:2px}',
       // 示例之间用「·」隔开，读起来是一句话而不是一排按钮。
       '.an-fill > .an-chip + .an-chip::before{content:"·";padding-right:4px;color:var(--dsw-alias-label-tertiary)}',
       // 示例按钮原来是带边框的胶囊。实测人设区一共 14 个，350px 高、占该栏 16%，
@@ -941,7 +950,7 @@ window.__ModuleLoader__.load({
       // 无边框、无底色、11px、次要色，跟正文同一行流下去，hover 才显出下划线。
       // 下划线常态就在，只是很淡（border-l3 那档灰）：去掉边框之后如果连下划线也只在
       // hover 才出现，触屏和键盘用户根本没有「这里可以点」的信号。
-      '.an-chip{padding:0;margin:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));text-underline-offset:3px}',
+      '.an-chip{padding:0;margin:0;border:0;background:none;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));text-underline-offset:3px}',
       '.an-chip:hover{color:var(--dsw-alias-brand-primary);text-decoration-color:currentColor}',
       '.an-chip:disabled{opacity:.5;cursor:not-allowed}',
       '.an-root{color-scheme:light}',
@@ -972,9 +981,9 @@ window.__ModuleLoader__.load({
       '.an-item:first-child{border-top:0}',
       '.an-item-main{flex:1;min-width:0}',
       '.an-item-text{color:var(--dsw-alias-label-primary);line-height:1.6;word-break:break-word}',
-      '.an-item-meta{margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);display:flex;gap:8px;flex-wrap:wrap}',
+      '.an-item-meta{margin-top:4px;font-size:11px;color:var(--dsw-alias-label-secondary);display:flex;gap:8px;flex-wrap:wrap}',
       '.an-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
-      '.an-empty{padding:14px 0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
+      '.an-empty{padding:14px 0;font-size:12px;color:var(--dsw-alias-label-secondary)}',
       '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:var(--dsw-radius-sm,8px);color:var(--dsw-alias-state-error-primary);font-size:12px;box-sizing:border-box}',
       // 说明块同理：白底 + 灰框，在白色卡片上和正文分不开。改成左侧一条色条 + 透明底，
       // 靠「缩进 + 色条」表示「这是附注」，不再多画一个盒子。
@@ -993,7 +1002,7 @@ window.__ModuleLoader__.load({
       '.an-import-item:first-child{border-top:0}',
       '.an-import-item-text{flex:1;min-width:0;color:var(--dsw-alias-label-primary);line-height:1.6;word-break:break-word}',
       '.an-import-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
-      '.an-import-summary{margin-top:8px;font-size:11px;line-height:1.7;color:var(--dsw-alias-label-tertiary)}',
+      '.an-import-summary{margin-top:8px;font-size:11px;line-height:1.7;color:var(--dsw-alias-label-secondary)}',
       '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:var(--dsw-radius-sm,8px);font-size:12px;line-height:1.7;color:var(--dsw-alias-state-error-primary)}',
       '.an-import-blocked code{font-size:11px;word-break:break-all}',
       '.an-pre{margin:8px 0 0 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-family:Consolas,Menlo,monospace}',
@@ -1005,7 +1014,7 @@ window.__ModuleLoader__.load({
       '.an-toast-ok{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1)));border:1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);color:var(--dsw-alias-state-success-primary)}',
       '.an-toast-err{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1)));border:1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}',
       '.an-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin-top:10px}',
-      '.an-kv dt{color:var(--dsw-alias-label-tertiary)}',
+      '.an-kv dt{color:var(--dsw-alias-label-secondary)}',
       '.an-kv dd{margin:0;color:var(--dsw-alias-label-primary);word-break:break-all}',
       // ── 变更记录 ──
       // 每个字段一行；值可能很长（自定义指令、角色描述），所以给值留出换行空间
@@ -1016,7 +1025,7 @@ window.__ModuleLoader__.load({
       '.an-audit-changes{margin-top:6px;display:flex;flex-direction:column;gap:4px}',
       '.an-audit-change{display:flex;gap:8px;font-size:11px;line-height:1.6;align-items:baseline}',
       '.an-audit-key{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}',
-      '.an-audit-arrow{flex:1;min-width:0;color:var(--dsw-alias-label-tertiary);word-break:break-word}',
+      '.an-audit-arrow{flex:1;min-width:0;color:var(--dsw-alias-label-secondary);word-break:break-word}',
       '.an-audit-from{text-decoration:line-through;text-decoration-color:color-mix(in srgb, currentColor 50%, transparent)}',
       '.an-audit-to{color:var(--dsw-alias-label-primary)}',
       // ── 「最近改了什么」（下拉式） ──
@@ -1030,7 +1039,7 @@ window.__ModuleLoader__.load({
       '.an-recent{border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;overflow:hidden}',
       '.an-recent-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}',
       '.an-recent-toggle:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}',
-      '.an-recent-caret{flex:0 0 auto;width:12px;font-size:11px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
+      '.an-recent-caret{flex:0 0 auto;width:12px;font-size:11px;line-height:1;color:var(--dsw-alias-label-secondary);transition:transform .12s ease}',
       '[data-an-recent="open"] .an-recent-caret{transform:rotate(90deg)}',
       '.an-recent-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.an-recent-body{display:flex;flex-direction:column;gap:4px;padding:2px 12px 10px}',
@@ -1054,7 +1063,7 @@ window.__ModuleLoader__.load({
       // 光轨画出来就与边框错位。这里让宿主保持 block，标签自己绝对定位居中。
       '.an-trail-preview{position:relative;height:52px;margin-top:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1)}',
       '.an-trail-preview[data-an-trail="on"]{border-color:transparent}',
-      '.an-trail-preview-label{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.an-trail-preview-label{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-size:11px;color:var(--dsw-alias-label-secondary)}',
       // 关掉总开关时预览保留静态圆环：配色仍然看得见，但因为不动了，不会让人误以为还开着。
       '.an-trail-preview[data-an-trail-static="on"] .an-trail-layer{animation:none}',
       '.an-input-color{flex:0 0 auto;width:38px;height:28px;padding:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;cursor:pointer}',
@@ -1062,7 +1071,7 @@ window.__ModuleLoader__.load({
       // ── 卡片折叠 ──
       '.an-card-aside{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}',
       // 收起/展开是每张卡都有的重复控件，描边会变成九个小方框；只留文字。
-      '.an-card-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-card-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-card-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       // ── 卡内子块（记忆卡的清单区）──
       //
@@ -1079,11 +1088,11 @@ window.__ModuleLoader__.load({
       // 实测「整理时刻」那格宽 506px = 卡片宽的 94%，视觉上像一块可以写长句的输入区。
       // 用一个专门的窄宽类收住它，宽度仍按内容对齐（同一列数字框等宽）。
       '.an-num{max-width:158px}',
-      '.an-block-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-block-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-block-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       '.an-block-body{display:flex;flex-direction:column;gap:10px;margin-top:10px}',
       // ── 预览卡附注 ──
-      '.an-charcount{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.an-charcount{font-size:11px;color:var(--dsw-alias-label-secondary)}',
       '.an-invalid{margin-top:6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-state-warn-label,#d48806);word-break:break-all}',
       // ── 输入框快捷开关 ──
       '.an-quick-toggle{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:6px;min-height:28px;overflow:hidden;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}',
