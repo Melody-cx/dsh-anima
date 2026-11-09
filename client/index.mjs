@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.17'
+    const VERSION = '2.1.18'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -849,16 +849,13 @@ window.__ModuleLoader__.load({
       // 圆角的「盒中盒」，只用面板自身的底色（宿主 panel 就是 bg-layer-2：亮色
       // #fff、暗色 rgb(44,44,46)）把滚过去的卡片盖住，靠底部那条发丝线收边。
       // 这样既随时能切，又不新增一块实体容器。
-      // 两侧各 -24px 再补 24px 内边距：吸顶时底色要铺满滚动容器的整行宽度。
-      //
-      // 没有这两行时实测（`_tmp/visui/nav3seg.cjs`，把底色临时换成对比色）：导航
-      // 自身宽 540（= 内容列），而宿主 `.options` 宽 588、左右各 24px 内边距。
-      // 于是吸顶后左侧 24px 是**没被子盖住的空白**，滚过去的卡片从那条缝里露出来。
-      // 平时不显眼是因为导航底色与面板底色同为 #fff / rgb(44,44,46)，但那只是
-      // 「碰巧同色」——换主题、换底色，这条缝立刻变成一条断带。
-      // 负 margin 只吃掉滚动容器的内边距，tab 文字靠 padding 回到原位（实测
-      // navX 236→212、navW 540→588，与 .options 严丝合缝，tab 起点不变）。
-      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;margin:0 -24px;padding:0 24px;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
+      // 宽度必须与正文列一致，不铺满滚动容器。2.1.17 曾用 `margin:0 -24px` +
+      // `padding:0 24px` 把底色拉满到 `.options` 的整行（x212 w588），理由是
+      // 「否则左右 24px 会露正文」。2.1.18 用 `elementFromPoint` 实测推翻了这个
+      // 理由：撤掉之后那两条 24px 命中 `options`（容器本身），滚过去的卡片始终
+      // 在内容盒 x236 w540 里，进不去；而铺满反而让深色带比标题、卡片、变更记录
+      // 各宽出 24px —— 实测 nav 212..800 vs 正文 236..776，用户指的就是这条不齐。
+      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;margin:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
       // margin-bottom:-1px 让按钮的 2px 底边压住导航那条 .5px 发丝线 —— 早一版用
       // inset 阴影画下划线，截图里它悬在发丝线上方 1px，像一块没对齐的补丁。
       '.an-sectnav-tab{margin:0 20px -1px 0;padding:7px 0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',

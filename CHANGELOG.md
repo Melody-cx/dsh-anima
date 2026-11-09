@@ -9,6 +9,44 @@
 
 ---
 
+## [2.1.18] - 2026-11-10
+
+### 修复
+
+- **吸顶分区导航的深色带比正文宽 24px**。2.1.17 为了让底色盖住宿主 `.options` 的左右内边距，
+  加了 `margin:0 -24px;padding:0 24px`，于是导航变成 x212 w588，而页头标题、变更记录、
+  每张卡片都是 x236 w540 —— 肉眼就是「那条带的起始点和下面的内容对不上」。
+- 改回 `margin:0;padding:0`，宽度与正文列一致。
+
+### 为什么 2.1.17 的理由不成立
+
+- 当时写的是「左右两条 24px 是没被子盖住的空白，滚过去的卡片从那缝里露出来」。
+  2.1.18 用 `elementFromPoint` 实测：撤掉负 margin 后，那两条 24px 命中 `options`（滚动容器本身），
+  而卡片始终排在内容盒 x236 w540 里，物理上进不去那条缝。
+- 实测数据：改前 `nav 212..800` / `正文 236..776`；改后 `nav 236..776`，与 `an-recent`、`an-card`、
+  `an-root`、`an-page-title` 全部同起点同宽。460 窄外壳下同样对齐（nav/card/root 均 x406 w200）。
+
+### 测试
+
+- 把 2.1.17 那条「吸顶时底色铺满滚动容器整行」改成 `分区导航：吸顶栏与正文列同宽同起点（不额外铺满容器）`，
+  改断「水平 margin / padding 不许为非零」，正好反过来锁住这次的回归。
+- 反向验证：把负 margin 写回去 → 只这一条 FAIL、其余 83 项通过；恢复后 84 项全绿。
+
+### 验证
+
+- `node scripts/verify-core.mjs` → PASSED all 255
+- `node scripts/smoke-host.mjs` → PASSED all 113
+- `node scripts/smoke-client.mjs` → 通过 84 项，PASSED
+- `node scripts/check-client-i18n.mjs` → 302 个字面 key + 5 个前缀式 key，zh/en 对称
+- `node scripts/check-live.mjs http://127.0.0.1:60860` → PASSED all 38
+- 无头 Edge 实测（`_tmp/visui/align.cjs`）：800 宽与 460 宽下导航、卡片、页头全部同 x；
+  滚到 700px 后 `elementFromPoint` 打在原来那两条缝上，命中的是 `options` 不是正文。
+
+### 没做
+
+- 没动 `.options` 的 24px 内边距（那是宿主的，改了会影响其它设置分区）。
+- 没做「每栏记住自己的滚动位置」（上一轮列过，不在这次范围）。
+
 ## [2.1.17] - 2026-11-10
 
 ### 修复
