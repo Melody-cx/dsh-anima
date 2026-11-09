@@ -1005,6 +1005,24 @@ test('内置预设的枚举字段值都合法', () => {
   }
 })
 
+test('listPresets 给内置补 builtin、给自建补 custom（缺了客户端会把六条内置全画成可删）', () => {
+  // BUILTIN_PRESETS 的数据里没有 builtin 字段（写数据时没必要自我声明），
+  // 客户端却靠它决定下拉标签和删除按钮。少了这一步，六条内置预设
+  // 全显示成「自建」并各带一个删除按钮，点下去被后端 400 挡回来。
+  const all = listPresets([{ id: 'custom:甲', name: '甲', fields: {} }])
+  const builtin = all.filter((item) => item.builtin === true)
+  assert.equal(builtin.length, BUILTIN_PRESETS.length, `内置条数不对：${builtin.length}`)
+  assert.ok(builtin.every((item) => item.custom === false), '内置的 custom 应为 false')
+  const custom = all.filter((item) => item.custom === true)
+  assert.equal(custom.length, 1, `自建条数不对：${custom.length}`)
+  assert.equal(custom[0].id, 'custom:甲')
+  assert.equal(custom[0].builtin, false, '自建的 builtin 应为 false')
+
+  // 不许就地改常量：map 必须产出新对象，否则第一次调用就把 BUILTIN_PRESETS 污染了。
+  assert.equal(BUILTIN_PRESETS[0].builtin, undefined, 'BUILTIN_PRESETS 常量不许被就地加字段')
+  assert.equal(BUILTIN_PRESETS[0].custom, undefined, 'BUILTIN_PRESETS 常量不许被就地加字段')
+})
+
 test('listPresets 内置在前、自建在后', () => {
   const all = listPresets([{ id: 'custom:甲', name: '甲', fields: {} }])
   assert.equal(all.length, BUILTIN_PRESETS.length + 1)

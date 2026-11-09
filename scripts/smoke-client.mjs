@@ -919,6 +919,61 @@ await test('八张卡都在，标题走词典而不是原始 key', () => {
   }
 })
 
+await test('预设：内置的不给删除按钮，自建才有（宿主漏补 builtin 标志时按 id 前缀兜底）', async () => {
+  // 这条钉的是「UI 承诺」和「后端行为」不能打架。
+  //
+  // 2.1.16 及以前 lib/presets.mjs 的 listPresets 只是把 BUILTIN_PRESETS 和自建拼起来，
+  // 而 BUILTIN_PRESETS 六条数据本身没有 builtin 字段 —— 于是前端
+  // ``preset.builtin ? 内置 : 自建`` 一律走 else 分支：
+  // 下拉里六条全标「自建」，每条右边还各画一个红色「删除」按钮。
+  // 点下去后端 index.mjs 的 id.startsWith('builtin:') 返回 400「内置预设不可删除」，
+  // 而卡片上方就写着「内置预设不可删除」—— 用户面对的是自相矛盾的界面。
+  //
+  // 所以这里**故意把夹具里的 builtin 标志抹掉**，复现那个真实状态：
+  // 只有按 id 前缀也认得出内置，这条才过得去。
+  const saved = STATE_PAYLOAD.presets
+  try {
+    STATE_PAYLOAD.presets = [
+      { id: 'builtin:precise', name: '专业严谨', description: '默认档', fields: {} },
+      { id: 'builtin:concise', name: '极简主义', description: '能省则省', fields: {} },
+      { id: 'custom:mine', name: '我自己那套', description: '自建的一条', fields: {} }
+    ]
+    await controller.loadState()
+    renderFreshSettings()
+    await flush()
+
+    const nodes = cardNodes(lastTree, dict.zh['preset.title'], 'preset')
+    assert.ok(nodes.length > 0, '找不到人设预设卡')
+
+    const deletes = elements(nodes, 'button').filter(
+      (n) => n.props.className === 'an-btn an-btn-sm an-btn-danger'
+    )
+    assert.equal(deletes.length, 1, `只该给自建预设画删除按钮，实际 ${deletes.length} 个`)
+
+    // 下拉选项：两条内置都标「内置」，自建标「自建」。
+    const options = elements(nodes, 'option').map((n) => String(n.props.children ?? ''))
+    const builtinOptions = options.filter((text) => text.startsWith('专业严谨') || text.startsWith('极简主义'))
+    assert.equal(builtinOptions.length, 2, `两条内置预设都该在下拉里（实际 ${builtinOptions.length}）`)
+    for (const text of builtinOptions) {
+      assert.ok(
+        text.includes(dict.zh['preset.builtinTag']),
+        `内置预设被标成了自建：${text}`
+      )
+    }
+    const mine = options.find((text) => text.startsWith('我自己那套'))
+    assert.ok(mine && mine.includes(dict.zh['preset.customTag']), `自建预设该标「自建」：${mine}`)
+
+    // 「共 N 项」走词典，不再硬编码中文「项」。
+    const countText = dict.zh['preset.count'].split('{n}').join(String(STATE_PAYLOAD.presets.length))
+    assert.ok(
+      allText(nodes).includes(countText),
+      `卡片头该显示「${countText}」（实际文本里没有）`
+    )
+  } finally {
+    STATE_PAYLOAD.presets = saved
+  }
+})
+
 await test('最近改了什么：常驻在顶部，但收起态只占一行（下拉）', () => {
   // 用户的原话是「我根本不知道改成啥了」。原来的变更记录在「高级」栏里、
   // 默认收起、还要再点一次「展开明细」，等于没有。这条用例锁住「它常驻」。
@@ -2881,6 +2936,34 @@ await test('分区导航：一直吸在顶部（滚下去还能切栏），底�
   const bg = (rule[1].match(/background:([^;}]*)/) || [])[1] || ''
   assert.equal(bg.includes('transparent'), false, `吸顶栏用透明底，下面的卡片会透上来：${bg}`)
   assert.ok(/var\(--dsw-alias-/.test(bg), `吸顶栏底色没走宿主 token：${bg}`)
+})
+
+await test('分区导航：吸顶时底色铺满滚动容器整行（左右留白不许露正文）', () => {
+  // 宿主给第三方分区的内容列带左右各 24px 内边距：.options 宽 588、真正的内容区
+  // 只有 540。2.1.15 恢复吸顶后，导航自身宽 540 —— 吸在顶部时左边那 24px 是
+  // **没有底色的空白**，滚过去的卡片从那条缝里露出来。
+  //
+  // 平时看不出来，是因为导航底色恰好与面板底色同为 #fff / rgb(44,44,46)，
+  // 属于「碰巧同色」。实测（_tmp/visui/nav3seg.cjs）把底色换成对比色后，左右
+  // 两条留白立刻是白的，中间才是导航的底色 —— 三段断带。
+  //
+  // 修法是负 margin 吃掉容器的内边距、再用等量 padding 把 tab 推回原位。
+  // 这条断「两值必须等量且成对出现」：只写负 margin 会把 tab 推到容器边缘外，
+  // 只写 padding 则底色依旧铺不开。
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  const rule = css.match(/\.an-sectnav\{([^}]*)\}/)
+  assert.ok(rule, '找不到 .an-sectnav 规则')
+  const body = rule[1]
+  const margin = (body.match(/(?:^|;)\s*margin:([^;}]*)/) || [])[1] || ''
+  const padding = (body.match(/(?:^|;)\s*padding:([^;}]*)/) || [])[1] || ''
+  const negH = margin.match(/0\s+(-[\d.]+)px/)
+  assert.ok(negH, `吸顶栏没有负的水平 margin，左右留白会露出正文：margin=${margin}`)
+  const padH = padding.match(/0\s+([\d.]+)px/)
+  assert.ok(padH, `吸顶栏没有水平 padding，tab 会被推出容器：padding=${padding}`)
+  assert.equal(
+    Math.abs(parseFloat(negH[1])), parseFloat(padH[1]),
+    `负 margin 与 padding 必须等量，否则 tab 会错位：margin=${margin} padding=${padding}`
+  )
 })
 
 await test('吸底保存栏：把内边距一起抵消掉，滚到底时贴着容器底（不悬空）', () => {

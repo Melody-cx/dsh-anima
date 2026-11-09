@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.16'
+    const VERSION = '2.1.17'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -849,7 +849,16 @@ window.__ModuleLoader__.load({
       // 圆角的「盒中盒」，只用面板自身的底色（宿主 panel 就是 bg-layer-2：亮色
       // #fff、暗色 rgb(44,44,46)）把滚过去的卡片盖住，靠底部那条发丝线收边。
       // 这样既随时能切，又不新增一块实体容器。
-      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
+      // 两侧各 -24px 再补 24px 内边距：吸顶时底色要铺满滚动容器的整行宽度。
+      //
+      // 没有这两行时实测（`_tmp/visui/nav3seg.cjs`，把底色临时换成对比色）：导航
+      // 自身宽 540（= 内容列），而宿主 `.options` 宽 588、左右各 24px 内边距。
+      // 于是吸顶后左侧 24px 是**没被子盖住的空白**，滚过去的卡片从那条缝里露出来。
+      // 平时不显眼是因为导航底色与面板底色同为 #fff / rgb(44,44,46)，但那只是
+      // 「碰巧同色」——换主题、换底色，这条缝立刻变成一条断带。
+      // 负 margin 只吃掉滚动容器的内边距，tab 文字靠 padding 回到原位（实测
+      // navX 236→212、navW 540→588，与 .options 严丝合缝，tab 起点不变）。
+      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;margin:0 -24px;padding:0 24px;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
       // margin-bottom:-1px 让按钮的 2px 底边压住导航那条 .5px 发丝线 —— 早一版用
       // inset 阴影画下划线，截图里它悬在发丝线上方 1px，像一块没对齐的补丁。
       '.an-sectnav-tab{margin:0 20px -1px 0;padding:7px 0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
@@ -1260,6 +1269,7 @@ window.__ModuleLoader__.load({
       'preset.delete': '删除',
       'preset.builtinTag': '内置',
       'preset.customTag': '自建',
+      'preset.count': '{n} 项',
       'preset.builtinHint': '内置预设不可删除；与自建重名时内置优先。',
       'preset.saveHint': '保存的是当前**已保存**的设置。请先点上面的「保存」。',
       'preset.activeTag': '当前生效',
@@ -1711,6 +1721,7 @@ window.__ModuleLoader__.load({
       'preset.delete': 'Delete',
       'preset.builtinTag': 'built-in',
       'preset.customTag': 'custom',
+      'preset.count': '{n} presets',
       'preset.builtinHint': 'Built-in presets cannot be deleted; a built-in wins over a custom preset with the same name.',
       'preset.saveHint': 'Saves the settings as currently **stored**. Hit Save above first.',
       'preset.activeTag': 'in effect',
@@ -2287,6 +2298,23 @@ window.__ModuleLoader__.load({
 
     function Pre(props) {
       return e('pre', { className: 'an-pre' }, props.text ?? '')
+    }
+
+    /**
+     * 这条预设是不是内置的。
+     *
+     * 两个判据用 OR 连起来是因为它们分别对应两个已经踩过的坑：
+     *   - `builtin === true`：宿主 listPresets 补的标志。少了它，六条内置预设会
+     *     全部显示成「自建」（下拉标签错）并被画上删除按钮。
+     *   - id 以 `builtin:` 开头：后端 /api/anima/presets/delete 就是按这个前缀
+     *     拒删的（返回 400「内置预设不可删除」）。前端若只看标志位，一旦宿主侧
+     *     漏补字段就会出现「UI 给你删除按钮、点下去被拒」的自相矛盾。
+     * 两者都对不上才算自建 —— 宁可少给一个删除按钮，也不给一个按了就报错的。
+     */
+    function isBuiltinPreset(preset) {
+      if (!preset || typeof preset !== 'object') return false
+      if (preset.builtin === true) return true
+      return typeof preset.id === 'string' && preset.id.startsWith('builtin:')
     }
 
     /**
@@ -4801,7 +4829,9 @@ window.__ModuleLoader__.load({
               ? e('span', { className: 'an-badge an-badge-ok', title: t('preset.activeHint') },
                 `${t('preset.activeTag')}：${activePreset.name}`)
               : null,
-            e('span', { className: 'an-badge' }, `${(state.presets ?? []).length} 项`)
+            // 「项」原来是硬编码中文，英文界面里会冒出「6 项」。走词典。
+            e('span', { className: 'an-badge' },
+              t('preset.count').split('{n}').join(String((state.presets ?? []).length)))
           )
         },
           e('div', { className: 'an-row an-rowend' },
@@ -4820,7 +4850,9 @@ window.__ModuleLoader__.load({
                 e('option', { value: '' }, t('ws.none')),
                 (state.presets ?? []).map((preset) =>
                   e('option', { key: preset.id, value: preset.id },
-                    `${preset.name}（${preset.builtin ? t('preset.builtinTag') : t('preset.customTag')}）`
+                    // 用 isBuiltinPreset 而不是裸 preset.builtin：宿主侧漏补标志时，
+                    // 至少还能按 id 前缀把内置认出来，不会六条全标成「自建」。
+                    `${preset.name}（${isBuiltinPreset(preset) ? t('preset.builtinTag') : t('preset.customTag')}）`
                     + (preset.id === state.activePresetId ? ` · ${t('preset.activeTag')}` : ''))
                 )
               )
@@ -4873,9 +4905,15 @@ window.__ModuleLoader__.load({
             e(Hint, null, t('preset.saveHint')),
 
             // 自建预设可删（内置不可删，故不给按钮）
-            (state.presets ?? []).filter((preset) => !preset.builtin).length > 0
+            //
+            // 判据要双保险：宿主侧 listPresets 现在会补 builtin 标志（lib/presets.mjs），
+            // 但那份标志是 2.1.17 才补的 —— 如果哪天宿主侧漏补、或前端拿到的是旧缓存
+            // 的 presets，光看 builtin 就会把六条内置预设全画成可删除，点下去被后端
+            // 400「内置预设不可删除」挡回来。id 前缀 'builtin:' 是后端自己用来拒删的
+            // 判据（index.mjs），跟它对齐不会两边打架。
+            (state.presets ?? []).filter((preset) => !isBuiltinPreset(preset)).length > 0
               ? e('div', { className: 'an-list an-mt10' },
-                  (state.presets ?? []).filter((preset) => !preset.builtin).map((preset) =>
+                  (state.presets ?? []).filter((preset) => !isBuiltinPreset(preset)).map((preset) =>
                     e('div', { className: 'an-item', key: preset.id },
                       e('div', { className: 'an-item-main' },
                         e('div', null, preset.name),
