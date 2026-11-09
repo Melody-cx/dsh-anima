@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.7'
+    const VERSION = '2.1.8'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -883,7 +883,7 @@ window.__ModuleLoader__.load({
       // 必须靠标记覆盖，不能靠「前面没有兄弟」这个假设。
       '.an-card[data-an-firstcard="true"]{padding-top:0;border-top:0}',
       '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}',
-      '.an-card-title{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--dsw-alias-label-primary);margin:0}',
+      '.an-card-title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}',
       // 卡片**内部**的小节标题。原先这八处（体检、哪些记忆进了对话、导入外部记忆、
       // 把当前设置存为预设、运行计数、工作区覆盖里的三段）直接复用了 an-card-title，
       // 于是「体检」和顶层的「长期记忆」一样大 —— 视觉上等于另起一张卡，一屏里
@@ -913,7 +913,7 @@ window.__ModuleLoader__.load({
       // 实测人设区 40 个带边框的盒子、advanced 区 105 个，视觉上就是一片方框套方框。
       // bg-module-platform 是宿主专为「嵌在面板里的控件」准备的底色（亮 #f5f6f7 / 暗 bluish-800），
       // 比卡片底色深一档，于是输入区自己浮出来，边框可以退成透明。
-      '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid transparent;border-radius:6px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
+      '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid transparent;border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
       '.an-input:hover,.an-textarea:hover,.an-select:hover{border-color:var(--dsw-alias-border-l2)}',
       '.an-textarea{min-height:88px;resize:vertical}',
       // 短字段（上限 ≤300）用两行高度：三条并排时省下的正是纵向空间。
@@ -924,7 +924,7 @@ window.__ModuleLoader__.load({
       // 按钮、tab、复选项一律没有焦点环 —— P4 加了分区 tab 的左右方向键漫游之后，
       // 键盘用户按方向键能切换分区，但看不出焦点停在哪一栏。
       // 用 :focus-visible 而不是 :focus：鼠标点击不该出现焦点环。
-      '.an-root :focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:4px}',
+      '.an-root :focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:var(--dsw-radius-sm,8px)}',
       // 「一键填入」按钮组 —— 旧版这里是下拉框，档位改成一段现成的说法之后，
       // 用一排小按钮比下拉更容易发现「原来还可以填这个」。
       '.an-fill{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;font-size:11px}',
@@ -948,7 +948,7 @@ window.__ModuleLoader__.load({
       // 次要按钮不再描边：原来每个动作都是一颗「白底 + 1px 边框 + 6px 圆角」的小方块，
       // 一屏二十几颗，眼睛分不清哪颗是一级操作。现在只有主按钮（保存 / 套用）和危险按钮
       // （删除）保留形状，其余靠文字本身 + hover 底色表达可点。
-      '.an-btn{padding:6px 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}',
+      '.an-btn{padding:6px 10px;border:1px solid transparent;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}',
       '.an-btn:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
       '.an-btn:disabled{opacity:.5;cursor:not-allowed}',
       '.an-btn-primary{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-brand-primary);font-weight:500}',
@@ -971,17 +971,17 @@ window.__ModuleLoader__.load({
       '.an-item-meta{margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);display:flex;gap:8px;flex-wrap:wrap}',
       '.an-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
       '.an-empty{padding:14px 0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;color:var(--dsw-alias-state-error-primary);font-size:12px;box-sizing:border-box}',
+      '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:var(--dsw-radius-sm,8px);color:var(--dsw-alias-state-error-primary);font-size:12px;box-sizing:border-box}',
       // 说明块同理：白底 + 灰框，在白色卡片上和正文分不开。改成左侧一条色条 + 透明底，
       // 靠「缩进 + 色条」表示「这是附注」，不再多画一个盒子。
       '.an-note{margin-top:8px;padding:6px 12px;border:0;border-left:2px solid var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6}',
       // ── 导入外部记忆（Phase ②）──
       // 面板刻意做成卡片内联展开而不是浮层弹窗：设置页本身已经在宿主设置面板里，
       // 再叠一层浮层会出现两个遮罩、两层 Esc 语义，而且浮层在窄面板里不好用。
-      '.an-import{margin-top:10px;padding:12px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
+      '.an-import{margin-top:10px;padding:12px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1)}',
       '.an-import-step{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}',
       '.an-import-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
-      '.an-import-prompt{margin:0 0 12px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base,rgba(127,127,127,.06));color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-family:inherit}',
+      '.an-import-prompt{margin:0 0 12px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-base,rgba(127,127,127,.06));color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-family:inherit}',
       '.an-import-divider{margin:14px 0;border:0;border-top:1px solid var(--dsw-alias-border-l2)}',
       // 切出来的条目：一行一条，行内可改层级。改层级用两个小按钮而不是下拉 ——
       // 只有两种取值，下拉要多一次点击才能看到「原来还能选」。
@@ -990,10 +990,10 @@ window.__ModuleLoader__.load({
       '.an-import-item-text{flex:1;min-width:0;color:var(--dsw-alias-label-primary);line-height:1.6;word-break:break-word}',
       '.an-import-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
       '.an-import-summary{margin-top:8px;font-size:11px;line-height:1.7;color:var(--dsw-alias-label-tertiary)}',
-      '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;font-size:12px;line-height:1.7;color:var(--dsw-alias-state-error-primary)}',
+      '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:var(--dsw-radius-sm,8px);font-size:12px;line-height:1.7;color:var(--dsw-alias-state-error-primary)}',
       '.an-import-blocked code{font-size:11px;word-break:break-all}',
-      '.an-pre{margin:8px 0 0 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-family:Consolas,Menlo,monospace}',
-      '.an-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:8px 16px;border-radius:6px;font-size:13px;font-weight:500;z-index:10000;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;white-space:nowrap}',
+      '.an-pre{margin:8px 0 0 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-family:Consolas,Menlo,monospace}',
+      '.an-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:8px 16px;border-radius:var(--dsw-radius-sm,8px);font-size:13px;font-weight:500;z-index:10000;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;white-space:nowrap}',
       // toast 原来写死了一套浅色（#f6ffed / #fff1f0）。它们没有任何暗色分支，
       // 于是在深色主题下是一块刺眼的亮绿/亮粉。改成从语义 token 调出来：
       // --dsw-alias-state-* 在亮/暗两套里各自有值，底色用 color-mix 压到
@@ -1026,7 +1026,7 @@ window.__ModuleLoader__.load({
       '.an-recent{border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;overflow:hidden}',
       '.an-recent-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}',
       '.an-recent-toggle:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}',
-      '.an-recent-caret{flex:0 0 auto;width:10px;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
+      '.an-recent-caret{flex:0 0 auto;width:12px;font-size:11px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
       '[data-an-recent="open"] .an-recent-caret{transform:rotate(90deg)}',
       '.an-recent-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.an-recent-body{display:flex;flex-direction:column;gap:4px;padding:2px 12px 10px}',
@@ -1048,16 +1048,16 @@ window.__ModuleLoader__.load({
       // ── 光轨配色预览 ──
       // 刻意不用 flex 居中：absolute 的静态位置在 flex 容器里会落到正中间，
       // 光轨画出来就与边框错位。这里让宿主保持 block，标签自己绝对定位居中。
-      '.an-trail-preview{position:relative;height:52px;margin-top:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
+      '.an-trail-preview{position:relative;height:52px;margin-top:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1)}',
       '.an-trail-preview[data-an-trail="on"]{border-color:transparent}',
       '.an-trail-preview-label{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);text-align:center;font-size:11px;color:var(--dsw-alias-label-tertiary)}',
       // 关掉总开关时预览保留静态圆环：配色仍然看得见，但因为不动了，不会让人误以为还开着。
       '.an-trail-preview[data-an-trail-static="on"] .an-trail-layer{animation:none}',
-      '.an-input-color{flex:0 0 auto;width:38px;height:28px;padding:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;cursor:pointer}',
+      '.an-input-color{flex:0 0 auto;width:38px;height:28px;padding:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;cursor:pointer}',
       // ── 卡片折叠 ──
       '.an-card-aside{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}',
       // 收起/展开是每张卡都有的重复控件，描边会变成九个小方框；只留文字。
-      '.an-card-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-card-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-card-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       // ── 卡内子块（记忆卡的清单区）──
       //
@@ -1074,14 +1074,14 @@ window.__ModuleLoader__.load({
       // 实测「整理时刻」那格宽 506px = 卡片宽的 94%，视觉上像一块可以写长句的输入区。
       // 用一个专门的窄宽类收住它，宽度仍按内容对齐（同一列数字框等宽）。
       '.an-num{max-width:158px}',
-      '.an-block-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-block-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-block-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       '.an-block-body{display:flex;flex-direction:column;gap:10px;margin-top:10px}',
       // ── 预览卡附注 ──
       '.an-charcount{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
       '.an-invalid{margin-top:6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-state-warn-label,#d48806);word-break:break-all}',
       // ── 输入框快捷开关 ──
-      '.an-quick-toggle{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:6px;min-height:28px;overflow:hidden;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}',
+      '.an-quick-toggle{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:6px;min-height:28px;overflow:hidden;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}',
       '.an-quick-toggle[data-enabled="true"]{color:var(--dsw-alias-brand-primary)}',
       '.an-quick-toggle:disabled{cursor:wait;opacity:.6}',
       '.an-quick-toggle-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--dsw-alias-label-tertiary)}',
@@ -1091,7 +1091,7 @@ window.__ModuleLoader__.load({
       // ── 设置页导航图标（DOM 替换后由我们接管的那一格）──
       '[data-an-settings-nav] [data-an-icon-replaced]{display:block;flex:0 0 auto}',
       // ── 待确认提议条 ──
-      '.an-proposal{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-state-warn-label,#d48806);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6}',
+      '.an-proposal{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-state-warn-label,#d48806);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6}',
       '.an-proposal-title{font-weight:600;color:var(--dsw-alias-state-warn-label,#d48806)}',
       '.an-proposal-detail{margin-top:6px;font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}',
       // ── 版式工具类 ──
@@ -1137,7 +1137,12 @@ window.__ModuleLoader__.load({
       '.an-flex140{flex:1 1 140px}',
       '.an-flex260{flex:2 1 260px}',
       '.an-flexfill{flex:1 1 0}',
-      '.an-page-title{font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      // 页头自己补下边距：它下面紧接分区导航，两者只隔 .an-root 的 20px，
+      // 视觉上标题和导航会粘成一块。
+      '.an-pagehead{padding-bottom:2px}',
+      // 原来是 15px/600，和卡片标题完全同档 —— 页头看上去就是「第一张卡的标题」，
+      // 整页少了最上面那一层。改成 17px，并比卡片再多一点字距收紧。
+      '.an-page-title{font-size:16px;font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.an-list-indent{margin:4px 0 0;padding-left:18px}'
     ].join('')
 
@@ -4637,12 +4642,14 @@ window.__ModuleLoader__.load({
 
       return e('div', {
         className: 'an-root',
-        // 有未保存改动时给底部多留 72px，给吸底的保存栏腾位（见 .an-root 注释）。
+        // 脏态标记：保存栏据此决定要不要吸底。底部预留见 .an-root 注释
+        // —— 2.1.6 起不再靠 padding 腾位，sticky 自己会盖住最后一行的风险用
+        // 「滚到底时留 24px 余量」来兜，而不是给容器加 72px。
         'data-an-dirty': dirty || wsDirty ? 'true' : 'false'
       },
         toastNode,
 
-        e('div', { className: 'an-row-between' },
+        e('div', { className: 'an-row-between an-pagehead' },
           e('div', { className: 'an-minw0' },
             e('div', { className: 'an-page-title' }, t('page.title')),
             e('div', { className: 'an-hintline' }, t('page.desc'))
