@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.13'
+    const VERSION = '2.1.14'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -4227,10 +4227,46 @@ window.__ModuleLoader__.load({
         onToggle: toggleMemBlock
       })
 
+      // 切栏之后把滚动位置带回该栏开头。
+      //
+      // 宿主把第三方分区挂在同一个滚动容器里（`AnXs9G_options{flex:1;overflow-y:auto}`），
+      // 分区之间只换内容、不换容器，所以 scrollTop 会跨栏残留，而且是被浏览器
+      // 「夹」到新栏的最大值：实测人设栏 2168px（最大滚 1422），记忆栏 1439px（最大 693），
+      // 从人设栏滚到底再切过去，scrollTop 落到 693，记忆卡顶边因此是 -467 ——
+      // 一进来直接落在「记忆体检」附近，标题和待审队列全在视野外。
+      //
+      // 找「最近的、真的能滚的祖先」而不是写死 .options：宿主改版换了类名也不会失效。
+      // 拿不到 DOM 时（渲染测试只有假 React）静默跳过，不抛。
+      const resetScroll = (id) => {
+        if (typeof document === 'undefined') return
+        if (typeof document.getElementById !== 'function') return
+        const cards = SECTION_CARDS.get(id)
+        const first = cards && cards[0]
+        if (!first) return
+        let node = document.getElementById(`an-card-${first}`)
+        while (node && node !== document.body) {
+          if (node.scrollHeight > node.clientHeight + 1) {
+            const style = typeof globalThis.getComputedStyle === 'function'
+              ? globalThis.getComputedStyle(node)
+              : null
+            const overflow = style ? String(style.overflowY ?? '') : ''
+            if (overflow === 'auto' || overflow === 'scroll') {
+              node.scrollTop = 0
+              return
+            }
+          }
+          node = node.parentElement
+        }
+      }
+
       const selectSection = (id) => {
         if (!SECTION_IDS.includes(id)) return
         writeActiveSection(id)
         setActiveSectionState(id)
+        // 必须等新栏渲染完再归位：先归零的话，旧栏内容还在，浏览器随后按旧高度
+        // 又夹一次，等于没做。放到下一个宏任务里，测试用的假 React 不会跑到这里
+        // （setTimeout 在 node 里存在，但 resetScroll 会因为没 DOM 直接返回）。
+        if (typeof setTimeout === 'function') setTimeout(() => resetScroll(id), 0)
       }
 
       // 卡片的三态接线：折叠态 + 「此刻是不是在这一栏」。

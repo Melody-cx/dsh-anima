@@ -2959,6 +2959,56 @@ await test('表单控件的可访问名：每个输入框要么有 label[for]，
   })
 })
 
+await test('分区切换：把滚动位置带回新栏开头（宿主是同一个滚动容器，scrollTop 会跨栏残留）', async () => {
+  // 真实现象（无头 Edge 在复刻宿主外壳里实测）：人设栏 2168px、滚动上限 1422；
+  // 记忆栏 1439px、上限 693。从人设栏滚到底再切到记忆栏，宿主不重建滚动容器，
+  // scrollTop 被浏览器夹到 693 —— 记忆卡顶边直接是 -467，一进来就落在
+  // 「记忆体检」附近，标题和待审队列全在视野外。
+  //
+  // 这里用假的 DOM 节点验「有没有把滚动归零」这一件事：真实浏览器行为在
+  // _tmp/visui/scrollsim2.cjs 里单独验过，测试只守接线，不守布局。
+  return withFreshSettings((view) => {
+    // 切换目标是「记忆」栏，所以归位逻辑会去找这栏的首卡 an-card-mem，
+    // 再沿 parentElement 往上找那个真能滚的容器。
+    const scroller = { scrollHeight: 1439, clientHeight: 746, scrollTop: 693, parentElement: null }
+    const cardNode = { parentElement: scroller }
+    const seen = []
+    const savedGetById = globalThis.document.getElementById
+    const savedGCS = globalThis.getComputedStyle
+    globalThis.document.getElementById = (id) => {
+      seen.push(id)
+      return id === 'an-card-mem' ? cardNode : null
+    }
+    globalThis.getComputedStyle = () => ({ overflowY: 'auto' })
+
+    const restore = () => {
+      globalThis.document.getElementById = savedGetById
+      if (savedGCS === undefined) delete globalThis.getComputedStyle
+      else globalThis.getComputedStyle = savedGCS
+    }
+
+    switchSectionOn(view.tree, 'memory')
+    // selectSection 把归位放在下一个宏任务里（新栏要先渲染完），所以这里必须等。
+    // 断言一律在 Promise 里 reject：直接扔在 setTimeout 回调里的话，抛出去的时候
+    // 早就出了 test() 的 try 包住的范围，套件会先报「全部通过」再在最后崩掉
+    // —— 这条我用「删掉归位那行」做反向验证时亲眼看到了。
+    // 另外这个 Promise 必须 return 出去，否则 test() 的 await 等不到它。
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        try {
+          assert.ok(seen.includes('an-card-mem'), `没有去找新栏首卡对应的元素（查过：${JSON.stringify(seen)}）`)
+          assert.equal(scroller.scrollTop, 0, '切栏后滚动位置没归零 —— 用户会落在一栏的中段')
+          resolve()
+        } catch (err) {
+          reject(err)
+        } finally {
+          restore()
+        }
+      }, 10)
+    })
+  })
+})
+
 await test('分区导航：切到「记忆」后，人设卡是 display:none —— 且内容没被销毁', () => {
   withFreshSettings((view) => {
     switchSectionOn(view.tree, 'memory')
