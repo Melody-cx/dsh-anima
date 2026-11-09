@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.4'
+    const VERSION = '2.1.5'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -60,9 +60,13 @@ window.__ModuleLoader__.load({
     //      切走前敲了半截的内容一起丢掉；
     //   ② 渲染树是测试的取样对象，整片不渲染会让大量既有断言失去落点。
     // 代价是首屏 DOM 不变小 —— 但用户看到的确实少了，而这是他提的问题。
+    // 「预设」原来单独一栏，只有一张卡。但它装的东西就是「把当前这套人设存成
+    // 一组」，和人设是同一件事的两面；独立成栏等于让用户为了存一套人设先切一次
+    // 栏、再切回来。现在并进人设栏，顺序是「先套一套现成的 → 再改身份/背景/
+    // 风格」，读起来顺。旧 localStorage 里存的 'preset' 由 readActiveSection
+    // 的脏值兜底自然回落到第一栏，不需要迁移代码。
     const SECTIONS = [
-      { id: 'persona', cards: ['identity', 'user', 'style'] },
-      { id: 'preset', cards: ['preset'] },
+      { id: 'persona', cards: ['preset', 'identity', 'user', 'style'] },
       { id: 'memory', cards: ['mem'] },
       { id: 'behavior', cards: ['quality', 'trail'] },
       // 变更记录不在这张表里：它常驻在页面顶部（RecentChanges），
@@ -839,7 +843,7 @@ window.__ModuleLoader__.load({
       // 的保存栏，上下两条常驻栏合计吃掉约 10% 的高度，且吸顶那条与面板自身的
       // 边缘只隔 4px，视觉上像贴了两层。
       //
-      // 现在改成跟着内容滚走：分区只有五栏、且切换成本很低（宿主左栏里灵台是
+      // 现在改成跟着内容滚走：分区只有四栏、且切换成本很低（宿主左栏里灵台是
       // 一整块），为了「随时能切」常驻一条栏并不划算。NN/g 讲 sticky header 的
       // 第一条就是「先问到底需不需要它」。
       '.an-sectnav{display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
@@ -1447,7 +1451,6 @@ window.__ModuleLoader__.load({
       // 分区名（设置页顶部的横排标签）。用名词而不是动词：它们标的是「这里面
       // 装的是什么」，不是「点了会做什么」。
       'section.persona': '人设',
-      'section.preset': '预设',
       'section.memory': '记忆',
       'section.behavior': '表现',
       'section.advanced': '高级',
@@ -1884,7 +1887,6 @@ window.__ModuleLoader__.load({
       'card.collapse': 'Collapse',
       'card.expand': 'Expand',
       'section.persona': 'Persona',
-      'section.preset': 'Presets',
       'section.memory': 'Memory',
       'section.behavior': 'Behavior',
       'section.advanced': 'Advanced',
@@ -2218,12 +2220,12 @@ window.__ModuleLoader__.load({
     /**
      * 分区导航。一排横向标签，只切换「显示哪一栏」，不改任何设置值。
      *
-     * 刻意不用下拉框：分区只有五栏，横排一眼能看全，也能直接看出「原来还有
+     * 刻意不用下拉框：分区只有四栏，横排一眼能看全，也能直接看出「原来还有
      * 别的页」，而下拉把这件事藏进一次点击之后。
      *
      * 键盘与读屏（原来只有 role=tablist/tab + aria-selected，键盘完全按不到）：
      *   - 一组 tab 里只有当前那个可 Tab 进入，其余 tabIndex=-1（漫游 tabindex，
-     *     这是 ARIA tabs 的标配，否则按五次 Tab 才能跳过这条导航栏）；
+     *     这是 ARIA tabs 的标配，否则按四次 Tab 才能跳过这条导航栏）；
      *   - 左/右箭头移一位、Home/End 跳首尾，都「选中并聚焦」，即自动激活；
      *   - 每个 tab 用 aria-controls 指向本栏内容，内容侧挂在各卡片的
      *     data-an-section 上（见 cardSlot），由 tabpanel 属性认领。

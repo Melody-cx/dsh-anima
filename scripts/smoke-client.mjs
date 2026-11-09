@@ -2820,14 +2820,16 @@ function cardSection(tree, title, cardId) {
   }) ?? null
 }
 
-await test('分区导航：五栏都在、名字走词典、当前栏标 aria-selected', () => {
+await test('分区导航：四栏都在、名字走词典、当前栏标 aria-selected', () => {
   withFreshSettings((view) => {
     const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
-    assert.equal(tabs.length, 5, `应有五栏，实际 ${tabs.length}`)
+    assert.equal(tabs.length, 4, `应有四栏，实际 ${tabs.length}`)
     const labels = tabs.map((n) => n.props.children)
-    for (const key of ['persona', 'preset', 'memory', 'behavior', 'advanced']) {
+    // 'preset' 原来是独立一栏，2.1.5 并进人设栏了，所以这里不该再有它。
+    for (const key of ['persona', 'memory', 'behavior', 'advanced']) {
       assert.ok(labels.includes(dict.zh[`section.${key}`]), `缺分区：${key}（实际 ${JSON.stringify(labels)}）`)
     }
+    assert.ok(!labels.includes('预设'), `分区里不该再有独立的预设栏（实际 ${JSON.stringify(labels)}）`)
     const on = tabs.filter((n) => n.props['aria-selected'] === 'true')
     assert.equal(on.length, 1, `应恰好有一栏是选中态，实际 ${on.length}`)
   })
@@ -2871,8 +2873,10 @@ await test('分区导航：选中的栏落 localStorage，且脏值一律回到�
   const KEY = 'dsh-anima:active-section'
   try {
     storageBacking.delete(KEY)
-    // 脏值：不存在的分区名 / 大小写不同 / 空串
-    for (const bad of ['没这个分区', 'Persona', '']) {
+    // 脏值：不存在的分区名 / 大小写不同 / 空串 / 已经并掉的旧栏名
+    // 'preset' 是 2.1.5 之前的独立一栏，老用户 localStorage 里存的就是它，
+    // 必须自然回落到第一栏而不是白屏。
+    for (const bad of ['没这个分区', 'Persona', '', 'preset']) {
       storageBacking.set(KEY, bad)
       withFreshSettings((view) => {
         const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
@@ -3061,7 +3065,7 @@ await test('分区标签：选中态必须与未选中态有可见差异（不�
   const tabs = walk(lastTree).filter(
     (n) => n.kind === 'element' && /(^|\s)an-sectnav-tab(\s|$)/.test(String(n.props?.className ?? ''))
   )
-  assert.equal(tabs.length, 5, `分区标签应有 5 个（实际 ${tabs.length}）`)
+  assert.equal(tabs.length, 4, `分区标签应有 4 个（实际 ${tabs.length}）`)
   const on = tabs.filter((n) => String(n.props.className).includes('an-sectnav-tab-on'))
   assert.equal(on.length, 1, `应恰好一个标签处于选中态（实际 ${on.length}）`)
   assert.equal(on[0].props['aria-selected'], 'true')
