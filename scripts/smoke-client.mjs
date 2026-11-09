@@ -2924,6 +2924,41 @@ await test('分区导航：键盘左右箭头能换栏（八条：←/→ 循环
   })
 })
 
+await test('表单控件的可访问名：每个输入框要么有 label[for]，要么有 aria-label', () => {
+  // 用无头浏览器扫渲染结果时发现的：预设卡的「预设名」「说明」两个框，以及记忆卡
+  // 「手动添加」里的三个框，原来都只有 placeholder，没有 id / label / aria-label。
+  // placeholder 一敲字就消失，读屏软件到那一秒就不知道这个框是干什么的。
+  // 这条用例在渲染树上核，不依赖 DOM —— 序列化时 htmlFor 会不会写成 for 那是
+  // 截图工具的坑，跟组件本身对不对无关。
+  withFreshSettings((view) => {
+    const controls = walk(view.tree).filter((n) =>
+      n.kind === 'element' && ['input', 'textarea', 'select'].includes(n.type)
+      && n.props?.type !== 'checkbox' && n.props?.type !== 'hidden'
+    )
+    // 控件自己或祖先被 display:none 藏起来时也算（收起不等于可以没有名字）
+    const named = (node) => {
+      const p = node.props ?? {}
+      if (typeof p['aria-label'] === 'string' && p['aria-label'].trim()) return true
+      if (typeof p['aria-labelledby'] === 'string' && p['aria-labelledby'].trim()) return true
+      if (!p.id) return false
+      // 树上有没有 label[for=这个 id]
+      return walk(view.tree).some((n) =>
+        n.kind === 'element' && n.type === 'label'
+        && (n.props?.htmlFor === p.id || n.props?.for === p.id)
+      )
+    }
+    const unnamed = controls.filter((n) => !named(n))
+    assert.equal(
+      unnamed.length, 0,
+      `有 ${unnamed.length} 个控件没有可访问名：${JSON.stringify(
+        unnamed.map((n) => ({ tag: n.type, id: n.props?.id ?? null, ph: String(n.props?.placeholder ?? '').slice(0, 20) }))
+      )}`
+    )
+    // 断言数量不为零，防止「一个控件都没扫到」也算通过
+    assert.ok(controls.length > 20, `只扫到 ${controls.length} 个控件，选择器可能坏了`)
+  })
+})
+
 await test('分区导航：切到「记忆」后，人设卡是 display:none —— 且内容没被销毁', () => {
   withFreshSettings((view) => {
     switchSectionOn(view.tree, 'memory')

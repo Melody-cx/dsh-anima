@@ -9,6 +9,41 @@
 
 ---
 
+## [2.1.13] - 2026-11-09
+
+### 修复
+
+- 五个输入框补上可访问名。人设预设卡的「预设名」「说明」、记忆卡「手动添加」的
+  内容/备注/作用域，原来都只有 `placeholder`，没有 id、没有 label、没有 aria-label。
+  placeholder 一敲字就消失，读屏软件到那一刻就不知道这个框是干什么的；「手动添加」
+  又是 2.1.10 起默认收起、一展开就是三个无标签输入区的块。现在用 `aria-label` 补上
+  （`preset.name` / `preset.descField` / `mem.add` / `mem.addNote` / `mem.addScope`，
+  这些 key 本来就在词典里，只是没接到元素上）。没加可见 label：那一行要和「保存为
+  预设」按钮挤在同一行，加文字会把三者挤回折行（同 2.1.9 的修法）。
+
+### 改进
+
+- 补一条用例守这一层：遍历树上所有 input/textarea/select（跳过 checkbox 与 hidden），
+  每个都必须在控件自己或 `label[for]` 上找到名字。用例同时断「扫到的控件数 > 20」，
+  防止选择器坏掉之后「零个未命名」也算通过。
+
+### 没做
+
+- 没给 checkbox 接 aria-label。它们的 `<label for>` 一直是对的，自动化扫描从未命中。
+- 没做全量 axe-core / WAI-ARIA 合规审查。这一轮只查了「控件有没有名字」这一件事，
+  对比度是 2.1.11 单独查的，键盘是 2.1.12 单独查的。
+
+### 验证
+
+- 五套：verify-core 254、smoke-host 113、smoke-client 79（新增 1 条）、
+  check-client-i18n 字典完整 zh/en 对称、check-live 38。
+- 无头 Edge 扫四个分区的可见与隐藏控件：修复前 persona 命中 2 个真实缺口（预设名/说明）
+  加 3 个隐藏的（手动添加），其余三栏各 3 个；修复后四个分区全部 0 命中。
+- 新用例做过反向验证：删掉 `aria-label: t('preset.name')` 那一行，用例 FAIL 并指名
+  「1 个控件没有可访问名：input / 例如「午夜的毒舌」」，其余 78 项全绿；恢复后 79 项通过。
+- 顺带核了 ARIA 连接：4 个 tab 的 `aria-controls` 全部能解析到对应卡片，4 个
+  `role="tabpanel"` 的 `aria-labelledby` 全部指向存在的 tab id。
+
 ## [2.1.12] - 2026-11-09
 
 ### 修复

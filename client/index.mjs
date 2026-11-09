@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.12'
+    const VERSION = '2.1.13'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -4795,6 +4795,11 @@ window.__ModuleLoader__.load({
                 e('input', {
                   className: 'an-input',
                   type: 'text',
+                  // 这两个框原本只有 placeholder，没有 id / label / aria-label。
+                  // placeholder 一敲字就没了，读屏软件到那一刻就不知道这个框是干什么的。
+                  // 用 aria-label 而不是补可见 label：这一行要和右边的「保存为预设」
+                  // 按钮挤在同一行，加可见文字会把三者又挤回折行（见 2.1.9 的修法）。
+                  'aria-label': t('preset.name'),
                   value: presetForm.name,
                   maxLength: 40,
                   placeholder: t('preset.namePlaceholder'),
@@ -4805,6 +4810,7 @@ window.__ModuleLoader__.load({
                 e('input', {
                   className: 'an-input',
                   type: 'text',
+                  'aria-label': t('preset.descField'),
                   value: presetForm.description,
                   maxLength: 200,
                   placeholder: t('preset.descPlaceholder'),
@@ -5584,6 +5590,9 @@ window.__ModuleLoader__.load({
             e('div', { className: 'an-field an-mt10' },
               e('textarea', {
                 className: 'an-textarea',
+                // 手动添加的三个框同样只有 placeholder 当名字。它们平时是收起的
+                // （2.1.10 起的默认态），一展开就是三个没有任何标签的输入区。
+                'aria-label': t('mem.add'),
                 value: newMemory.text,
                 placeholder: t('mem.addPlaceholder'),
                 maxLength: 500,
@@ -5600,6 +5609,7 @@ window.__ModuleLoader__.load({
               e('input', {
                 className: 'an-input',
                 type: 'text',
+                'aria-label': t('mem.addNote'),
                 value: newMemory.note,
                 placeholder: t('mem.addNote'),
                 maxLength: 200,
@@ -5610,6 +5620,7 @@ window.__ModuleLoader__.load({
               e('input', {
                 className: 'an-input',
                 type: 'text',
+                'aria-label': t('mem.addScope'),
                 value: newMemory.scope,
                 placeholder: t('mem.addScope'),
                 onChange: (event) => setNewMemory((prev) => ({ ...prev, scope: event.target.value }))
