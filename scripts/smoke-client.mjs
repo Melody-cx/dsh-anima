@@ -1548,10 +1548,17 @@ await test('卡片折叠：默认态按「改的展开、查的收起」，手�
     // 「别人留下的记录」误判成「本卡没落盘」。
     const stored = () => JSON.parse(storageBacking.get(CARD_STATE_KEY) ?? '{}')
     assert.equal(stored().identity, true, '折叠状态没落盘')
-    // 收起是「不渲染」而不是「用 CSS 藏起来」：整段正文消失，卡头还在。
-    // （cardNodes 只认 className === 'an-card' 的节点，所以收起后它查不到这张卡。）
+    // 收起是「用 display:none 藏起来」，**不是卸载**。这一点与 2.1.9 之前相反，
+    // 改的原因是：卡片正文里全是没有独立保存按钮的草稿（身份/背景/风格都是随敲随存
+    // 到内存、要按底部保存栏才落盘的），卸载等于「一收卡就把刚敲的字扔了」 ——
+    // 那是少功能。记忆卡里的子块早就这么做，卡片这一层当时漏了。
     assert.deepEqual(collapsedClasses().sort(), ['identity', 'preview'], '人设卡收起后应与预览卡并列')
-    assert.equal(hasBody(), false, '卡片收起了但正文还在树里')
+    const bodies = elements(walk(lastTree), 'div').filter((n) => n.props.className === 'an-card-body')
+    assert.ok(bodies.length > 0, '找不到卡片正文容器 .an-card-body')
+    const identityBody = byClass(cardNodes(lastTree, title, 'identity'), 'an-card-body')[0]
+    assert.ok(identityBody, '收起后 .an-card-body 不该从树里消失')
+    assert.equal(identityBody.props.style?.display, 'none', '收起的卡正文应带 display:none')
+    assert.ok(hasBody(), '收起只是藏起来，输入框不该被卸载（否则草稿会丢）')
     assert.ok(
       byClass(walk(lastTree), 'an-card-title').map((n) => n.props.children).includes(title),
       '收起的是正文，卡头不该跟着消失'
@@ -2293,9 +2300,11 @@ await test('体检面板：查出问题必须逐条给出证据与命令，不�
   }
 })
 
-await test('记忆卡内的清单子块：待审默认展开、已采纳默认收起，收起只是 display:none 不卸子树', async () => {
+await test('记忆卡内的清单子块：只有待审默认展开，收起只是 display:none 不卸子树', async () => {
   // 这条钉的是三件事，任何一件退回去都会让这张卡难用：
-  //   ① 默认态按「要动手的展开、只核对的收起」分；
+  //   ① 默认态按「现在就得处理的展开、其余收起」分 —— 2.1.10 起连
+  //      「手动添加」也默认收起（它是常驻空表单，实测 333px），
+  //      所以四个子块里只有待审是展开的；
   //   ② 收起用 display:none，**子树仍在渲染树里** —— 子块里有未提交的草稿
   //      （手动添加的文本框），卸载等于把用户刚敲的字扔掉；
   //   ③ 折叠态与卡片共用同一份 localStorage，翻过之后要记得住。
@@ -2322,14 +2331,15 @@ await test('记忆卡内的清单子块：待审默认展开、已采纳默认�
     assert.equal(toggles().length, 4, `记忆卡内应有四个可折叠子块，实际 ${toggles().length}`)
 
     const expanded = toggles().map((n) => n.props['aria-expanded'])
-    assert.deepEqual(expanded, ['true', 'true', 'false', 'false'], `默认态不对：${JSON.stringify(expanded)}`)
+    // 只有「待审」展开；手动添加 / 已采纳 / 已丢弃 三个都收起。
+    assert.deepEqual(expanded, ['true', 'false', 'false', 'false'], `默认态不对：${JSON.stringify(expanded)}`)
 
     // 基准值：卡片层面的收起数（点开子块前后必须一致）。
     const cardCollapsedBefore = byClass(walk(lastTree), 'an-card an-card-collapsed').length
 
     // 收起态：正文容器还在，只是 display:none。
     const hiddenBodies = bodies().filter((n) => n.props.style?.display === 'none')
-    assert.equal(hiddenBodies.length, 2, `应有且只有两个子块默认收起，实际 ${hiddenBodies.length}`)
+    assert.equal(hiddenBodies.length, 3, `应有且只有三个子块默认收起，实际 ${hiddenBodies.length}`)
     // 关键：被收起的「已采纳」里那些条目文字仍在渲染树中 —— 不是卸载。
     assert.ok(
       allText(nodes()).includes(dict.zh['mem.adopted']),
@@ -2339,12 +2349,33 @@ await test('记忆卡内的清单子块：待审默认展开、已采纳默认�
       allText(nodes()).includes('已采纳一'),
       '收起只是 display:none，条目文字不该从渲染树里消失'
     )
+    // 2.1.10 新增：默认收起的是「手动添加」这张空表单，收起后它的
+    // textarea 必须还在渲染树里 —— 用户点开时要接着敲，不能从空白开始。
+    assert.ok(
+      elements(nodes(), 'textarea').some((node) => node.props.placeholder === dict.zh['mem.addPlaceholder']),
+      '手动添加默认收起后，它的文本框不该被卸载（否则刚敲的字会丢）'
+    )
 
     // 点一下「已采纳」的展开按钮，它应当展开并写进同一份 localStorage。
-    const adoptedToggle = toggles().find(
-      (n) => n.props['aria-expanded'] === 'false'
-    )
-    assert.ok(adoptedToggle, '收起态的子块上没有展开按钮')
+    //
+    // 不能直接取「第一个 aria-expanded=false 的按钮」：2.1.10 起默认收起
+    // 三个子块（手动添加 / 已采纳 / 已丢弃），第一个已不再是「已采纳」。
+    // 所以按「子块标题文本」定位到自己那一块，再从块内取折叠按钮。
+    const blockToggleByTitle = (title) => {
+      const heads = elements(nodes(), 'div').filter((n) => n.props.className === 'an-block-head')
+      for (const head of heads) {
+        const label = elements(walk(head, []), 'div').find((n) => n.props.className === 'an-block-title')
+        if (!label) continue
+        // 标题后面跟着条目计数（「已记住（1）」），所以按前缀认，不比整串。
+        if (!String(allText(walk(label, []))).trim().startsWith(title)) continue
+        const [toggle] = elements(walk(head, []), 'button').filter((n) => n.props.className === 'an-block-toggle')
+        if (toggle) return toggle
+      }
+      return undefined
+    }
+    const adoptedToggle = blockToggleByTitle(dict.zh['mem.adopted'])
+    assert.ok(adoptedToggle, '「已采纳」子块上找不到折叠按钮')
+    assert.equal(adoptedToggle.props['aria-expanded'], 'false', '「已采纳」默认应收起')
     adoptedToggle.props.onClick()
     await flush()
     const stored = JSON.parse(storageBacking.get(CARD_STATE_KEY) ?? '{}')
@@ -2352,8 +2383,8 @@ await test('记忆卡内的清单子块：待审默认展开、已采纳默认�
     assert.equal(stored['block:adopted'], false, `子块折叠态没落盘：${JSON.stringify(stored)}`)
     assert.equal(
       bodies().filter((n) => n.props.style?.display === 'none').length,
-      1,
-      '展开一个之后应只剩一个收起'
+      2,
+      '展开一个之后应只剩两个收起'
     )
 
     // 子块的类名不许污染卡片的折叠计数：点开一个子块，卡片层面的收起数不该动。

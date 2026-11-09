@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.9'
+    const VERSION = '2.1.10'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -2441,7 +2441,13 @@ window.__ModuleLoader__.load({
             toggle
           )
         ),
-        collapsed ? null : props.children
+        // 收起时**不卸载**子树，只用 display:none 藏。理由与 MemBlock 相同：
+        // 子卡里有未保存的表单值（身份/背景/风格全是没有单独保存按钮的草稿），
+        // 卸载等于用户把卡一收，刚敲的字就没了 —— 那是少功能，不是少显示。
+        e('div', {
+          className: 'an-card-body',
+          style: collapsed ? { display: 'none' } : undefined
+        }, props.children)
       )
     }
 
@@ -2487,12 +2493,17 @@ window.__ModuleLoader__.load({
       )
     }
 
-    // 记忆卡四个清单子块的默认态：待审与手动添加要动手，展开；已采纳与已丢弃
-    // 是清单，默认收起。
+    // 记忆卡四个子块的默认态：只有「待审」默认展开 —— 那是唯一一件
+    // 「现在就得处理」的事（有待审条目时它才出现，出现即是提醒）。
+    //
+    // 「手动添加」改成默认收起（2.1.10）：它是一张常驻的空表单，实测 333px，
+    // 占记忆卡正文 1463px 的 23%，而绝大多数时候用户是来看结果的，不是来手打一条。
+    // 收起只是 display:none —— 子树仍在渲染树里，点开时已经敲的草稿一个字不少，
+    // 所以这不是「少功能」，是「默认少占地方」。
     //
     // 刻意不并进 DEFAULT_COLLAPSED：那张表被「卡片默认收起几张」的用例数着，
     // 加进去会让那些数字对不上。键名带 `block:` 前缀，与卡片 id 不会撞。
-    const DEFAULT_COLLAPSED_BLOCKS = { adopted: true, discarded: true }
+    const DEFAULT_COLLAPSED_BLOCKS = { add: true, adopted: true, discarded: true }
 
     function memBlockCollapsed(id, overrides) {
       const key = `block:${id}`

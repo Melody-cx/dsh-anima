@@ -499,7 +499,7 @@ URL 内嵌凭据等 11 类模式。
 本插件尚未发布到 npm，从仓库直接装：
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v2.1.9
+dsh plugin add github:Melody-cx/dsh-anima#v2.1.10
 ```
 
 或者手工改 profile 的 `package.json`：
@@ -507,13 +507,13 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.1.9
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v2.1.9"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.1.10"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v2.1.9` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
+`#v2.1.10` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
 否则上游的任何改动都会在下次安装时直接进入你的 profile。git 源下载的是**整个仓库 tarball**
 （本仓库很小），首次安装可能比 npm 源慢一些，超时的话重试一次即可。
 
@@ -654,7 +654,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.1.9
 
 ### 不做任何迁移
 
-本插件**不读任何其它插件或自己旧版本的配置**。它发布过 1.0.0，但从 1.0.0 到 2.1.9 的存储格式完全相同
+本插件**不读任何其它插件或自己旧版本的配置**。它发布过 1.0.0，但从 1.0.0 到 2.1.10 的存储格式完全相同
 （`DOMAIN_VERSION` 都是 1，config / memories / meta / audit 四张表的 spec 逐字一致）——
 没有「老用户的介质」需要兼容，所以代码里既没有一次性迁移，也没有存储格式回退。
 这两块曾存在于开发期，都已删除；留着它们的唯一作用是让后人以为有一批需要照顾的存量用户。
@@ -725,7 +725,7 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.1.9
 那一刻回调触发，本仓用真 cordis 探针实证过），期间五个 section 返回空串 —— 宁可不注入，也不冒充默认档。
 
 **不做旧数据救援**：`storageDomain` 何时可用取决于装载顺序，同一个人可能早期把配置写进过别的落点。
-而从 1.0.0 到 2.1.9 的存储格式相同（`DOMAIN_VERSION` 都是 1，四张表一致），没有需要救援的旧介质 ——
+而从 1.0.0 到 2.1.10 的存储格式相同（`DOMAIN_VERSION` 都是 1，四张表一致），没有需要救援的旧介质 ——
 所以打开域时不做任何导入或归档，只打开自己的域。
 若将来真需要迁移，唯一安全的形状是：**仅在新域 config 记录不存在时**动手，且自己的任何失败都只记 warn，
 绝不外抛（这段代码在打开域的 try 块里，外抛会被包成新域的 `open-failed`，让一个本该正常的插件停摆）。
