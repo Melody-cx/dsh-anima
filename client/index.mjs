@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.6'
+    const VERSION = '2.1.7'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -843,13 +843,18 @@ window.__ModuleLoader__.load({
       // 现在改成跟着内容滚走：分区只有四栏、且切换成本很低（宿主左栏里灵台是
       // 一整块），为了「随时能切」常驻一条栏并不划算。NN/g 讲 sticky header 的
       // 第一条就是「先问到底需不需要它」。
-      '.an-sectnav{display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
-      '.an-sectnav-tab{padding:5px 14px;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
+      // 原来是个白底 + 1px 边框 + 8px 圆角的横条，横贯整栏 —— 那是全页最后一块
+      // 「盒中盒」。输入框改成底色分层之后，它是唯一还剩实体的容器，视线会先落在这个
+      // 空框上。改成宿主 tab 的语言：无底无框，靠底部那条线区分选中。
+      '.an-sectnav{display:flex;flex-wrap:wrap;gap:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:transparent}',
+      // margin-bottom:-1px 让按钮的 2px 底边压住导航那条 .5px 发丝线 —— 早一版用
+      // inset 阴影画下划线，截图里它悬在发丝线上方 1px，像一块没对齐的补丁。
+      '.an-sectnav-tab{margin:0 20px -1px 0;padding:7px 0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
       '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary)}',
       // 选中态必须一眼看得见。原来用 --dsw-alias-bg-base 当背景，那是**页面自身底色**，
       // 垫在同一块的 layer-1 上等于没变（用户录屏里五个标签一个都看不出被选中）。
       // 现在改成「更亮的表面 + 品牌色下划线 + 加粗」三重，深浅色主题下都成立。
-      '.an-sectnav-tab-on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600;box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary)}',
+      '.an-sectnav-tab-on{border-bottom-color:var(--dsw-alias-brand-primary);background:transparent;color:var(--dsw-alias-label-primary);font-weight:600}',
       // ── 底部保存栏 ──
       // 卡片里原来散着六处「保存」，每张卡各自一份、四条走的是同一个 doSave。
       // 收成一条之后，「现在有改动没保存」这件事只有一个说法。
@@ -874,6 +879,9 @@ window.__ModuleLoader__.load({
       '.an-card{padding:0;border:0;border-radius:0;background:transparent}',
       // 第一张卡（分区首卡）不画顶线：它紧跟分区导航，多一条线只会显得断开。
       '.an-card + .an-card{padding-top:20px;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      // 九张卡是同一父节点下的兄弟，隐藏的兄弟也让 `+` 命中，所以本栏首卡
+      // 必须靠标记覆盖，不能靠「前面没有兄弟」这个假设。
+      '.an-card[data-an-firstcard="true"]{padding-top:0;border-top:0}',
       '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}',
       '.an-card-title{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--dsw-alias-label-primary);margin:0}',
       // 卡片**内部**的小节标题。原先这八处（体检、哪些记忆进了对话、导入外部记忆、
@@ -927,7 +935,9 @@ window.__ModuleLoader__.load({
       // 压在 13 个字段之间 —— 一眼看过去满屏可点的方块，分不清哪些是「要填的」、
       // 哪些只是「可以照抄的例子」。功能一个不动，只把它们的视觉权重降下来：
       // 无边框、无底色、11px、次要色，跟正文同一行流下去，hover 才显出下划线。
-      '.an-chip{padding:0 0 0 0;margin:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:2px}',
+      // 下划线常态就在，只是很淡（border-l3 那档灰）：去掉边框之后如果连下划线也只在
+      // hover 才出现，触屏和键盘用户根本没有「这里可以点」的信号。
+      '.an-chip{padding:0;margin:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));text-underline-offset:3px}',
       '.an-chip:hover{color:var(--dsw-alias-brand-primary);text-decoration-color:currentColor}',
       '.an-chip:disabled{opacity:.5;cursor:not-allowed}',
       '.an-root{color-scheme:light}',
@@ -1011,7 +1021,9 @@ window.__ModuleLoader__.load({
       // 那条预览每行都带「原值 → 新值」，一屏就被它吃掉三分之一。
       // 变更记录是「一条可展开的信息」，不是操作区；与分区导航同款白底描边会让两条框并排
       // 像两个按钮组。改成上下各一条发丝线。
-      '.an-recent{border:0;border-top:.5px solid var(--dsw-alias-border-l2);border-bottom:.5px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;overflow:hidden}',
+      // 只留下面一条。上面那条紧挨着分区导航的底线，20px 内两条平行发丝线，
+      // 看上去像「忘了删掉的旧分隔」。
+      '.an-recent{border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;overflow:hidden}',
       '.an-recent-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}',
       '.an-recent-toggle:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}',
       '.an-recent-caret{flex:0 0 auto;width:10px;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
@@ -1118,6 +1130,9 @@ window.__ModuleLoader__.load({
       // 响应式两列/三列：flex-basis 固定，窄屏时自然折行，不需要媒体查询。
       '.an-flex240{flex:1 1 240px}',
       '.an-flex240an{flex:1 1 240px;min-width:0}',
+      // 短字段专用：基准 160 而不是 240。宿主内容区实测 540px，240*3+16*2 = 752
+      // 放不下，第三个小字段会被挤到下一行单独占满，五个字段摊成三行。
+      '.an-flex160an{flex:1 1 160px;min-width:0}',
       '.an-flex200{flex:1 1 200px}',
       '.an-flex140{flex:1 1 140px}',
       '.an-flex260{flex:2 1 260px}',
@@ -1133,12 +1148,12 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav.label': '灵台',
       'page.title': '灵台',
-      'page.desc': '这里管三件事：AI 叫什么、只对这个项目生效的设置、以及它会记住什么。',
+      'page.desc': '这里管 AI 是谁、本项目独有的设置、以及它记住了什么。',
 
       'identity.title': '助手身份',
       'identity.desc': '这段描述 AI 自己 —— 它是谁、叫什么、被要求怎么说话。',
       'identity.name': 'AI 的名字',
-      'identity.nameHint': '这是 AI 给自己的名字，不是你对它的称呼（那个在下一张卡里）。留空就不告诉它自己叫什么。',
+      'identity.nameHint': 'AI 给自己的名字，不是你对它的称呼。留空就不告诉它。',
       // 不给示例按钮，就在这里说清楚格式 —— 见 lib/wording.mjs 的 FIELD_EXAMPLES
       // 注释：名字被一键填进来太容易被原样留下，然后长期叫错。
       'identity.namePlaceholder': '例如「小林」「阿哲」——两三个字，别用职位或昵称',
@@ -1372,7 +1387,7 @@ window.__ModuleLoader__.load({
       'quality.ledger.five': '五档（三档 + 每类各写一行）',
       'quality.ledgerLevelHint': '出现这几类形状时必须写【对账】块。关掉它，R01 / R02 也就无从判起。',
       'quality.strict': '严格判词',
-      'quality.strictHint': '多判三条：R08 置信度错配、R11 稻草人、R12 越界自信。误报变多时通常是关这一项，而不是关掉整个质检层。',
+      'quality.strictHint': '多判 R08 / R11 / R12 三条。误报变多时关这一项，别关整层。',
       'quality.preStepCheck': '每轮机制检查',
       'quality.preStepCheckHint': '关掉后不再往对话里插提醒，但发给 AI 的规则还在。',
       'quality.maxFindings': '每轮最多报几条',
@@ -1430,7 +1445,7 @@ window.__ModuleLoader__.load({
       'inj.title': '哪些记忆进了对话',
       'inj.toggle': '查看每一条为什么带上 / 没带上',
       'inj.hide': '收起',
-      'inj.desc': '只有你说要记住的那些才会带给 AI，而且受条数和字数两个上限限制，先到哪个算哪个。',
+      'inj.desc': '只有你确认要记住的才会带给 AI，受下面两个上限约束。',
       'inj.empty': '还什么都没记住。',
       'inj.count': '条数',
       'inj.chars': '字符',
@@ -1588,12 +1603,12 @@ window.__ModuleLoader__.load({
     const en = {
       'nav.label': 'Persona & Memory',
       'page.title': 'Persona & Memory',
-      'page.desc': 'Three things live here: what the assistant calls itself, settings that only apply to this project, and what it remembers.',
+      'page.desc': 'Who the assistant is, settings that only apply here, and what it remembers.',
 
       'identity.title': 'Assistant identity',
       'identity.desc': 'This describes the assistant — who it is, what it is called, how it should talk.',
       'identity.name': 'Assistant name',
-      'identity.nameHint': 'The name the assistant calls itself — not how you address it (that is the next card). Leave empty and it will not be told its own name.',
+      'identity.nameHint': 'The name it calls itself — not how you address it. Leave empty for none.',
       'identity.namePlaceholder': 'e.g. "Wally", "Nova" — a word or two, not a job title or a pet name',
       'identity.role': 'Role',
       'identity.roleHint': 'For example "senior architect; conclusion first, then tradeoffs"',
@@ -1814,7 +1829,7 @@ window.__ModuleLoader__.load({
       'quality.ledger.five': 'Five tiers (three, plus one line per class)',
       'quality.ledgerLevelHint': 'When these shapes appear, a ledger block is required. With this off, R01 and R02 cannot be judged at all.',
       'quality.strict': 'Strict verdicts',
-      'quality.strictHint': 'Judges three more: R08 confidence mismatch, R11 straw man, R12 overreach. When false positives pile up, turn this off rather than the whole layer.',
+      'quality.strictHint': 'Also judges R08 / R11 / R12. When false positives pile up, turn this off rather than the whole layer.',
       'quality.preStepCheck': 'Mechanical check each turn',
       'quality.preStepCheckHint': 'Off means no notices are inserted, though the rules sent to the assistant stay in place.',
       'quality.maxFindings': 'Max findings per turn',
@@ -1872,7 +1887,7 @@ window.__ModuleLoader__.load({
       'inj.title': 'What went into the conversation',
       'inj.toggle': 'Show why each item was sent or not',
       'inj.hide': 'Hide',
-      'inj.desc': 'Only what you chose to remember is sent to the assistant, and only within both the item and character ceilings — whichever comes first.',
+      'inj.desc': 'Only memories you approved are sent, within the two ceilings below.',
       'inj.empty': 'Nothing remembered yet.',
       'inj.count': 'items',
       'inj.chars': 'characters',
@@ -2386,6 +2401,7 @@ window.__ModuleLoader__.load({
         'data-an-card': id || undefined,
         // 一张卡属于哪一栏；section 为 null 的卡（理论上没有）就当普通块。
         'data-an-section': typeof props.section === 'string' ? props.section : undefined,
+        'data-an-firstcard': props.tabpanel === true ? 'true' : undefined,
         // 每栏第一张卡才是 tab 对应的那个 panel，其余卡是它里面的内容块。
         role: props.tabpanel === true ? 'tabpanel' : undefined,
         'aria-labelledby': props.tabpanel === true ? `an-sectnav-tab-${props.section}` : undefined,
@@ -2760,9 +2776,10 @@ window.__ModuleLoader__.load({
           placeholder: props.placeholder ?? '',
           onChange: (event) => props.onChange(event.target.value)
         }),
-        e(Hint, null, limit
-          ? `${props.hint ?? ''}　${value.length}/${limit}`
-          : props.hint),
+        // 计数靠右单独一列，不再用全角空格拼进提示句里：拼在一起时
+        // 「身份、技术背景…　4/300」会被读成一整句，得多扫一次才分出后半截不是它。
+        // 上面几个手写字段早改成 count 属性了，这五个漏在外。
+        e(Hint, limit ? { count: `${value.length}/${limit}` } : null, props.hint),
         e(wordingPicker, {
           label: props.fillLabel,
           options: props.options,
@@ -4906,7 +4923,7 @@ window.__ModuleLoader__.load({
             onChange: (next) => patchLocal('style', next)
           }),
           e('div', { className: 'an-row an-gap16wrap' },
-            e('div', { className: 'an-flex240an' },
+            e('div', { className: 'an-flex160an' },
               e(wordingField, {
                 id: 'trait-heading',
                 label: t('style.headingLists'),
@@ -4918,7 +4935,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('headingLists', next)
               })
             ),
-            e('div', { className: 'an-flex240an' },
+            e('div', { className: 'an-flex160an' },
               e(wordingField, {
                 id: 'trait-emoji',
                 label: t('style.emoji'),
@@ -4930,7 +4947,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('emoji', next)
               })
             ),
-            e('div', { className: 'an-flex240an' },
+            e('div', { className: 'an-flex160an' },
               e(wordingField, {
                 id: 'trait-tables',
                 label: t('style.tables'),
@@ -4944,7 +4961,7 @@ window.__ModuleLoader__.load({
             )
           ),
           e('div', { className: 'an-row an-gap16wrap' },
-            e('div', { className: 'an-flex240an' },
+            e('div', { className: 'an-flex160an' },
               e(wordingField, {
                 id: 'length',
                 label: t('style.replyLength'),
@@ -4956,7 +4973,7 @@ window.__ModuleLoader__.load({
                 onChange: (next) => patchLocal('replyLength', next)
               })
             ),
-            e('div', { className: 'an-flex240an' },
+            e('div', { className: 'an-flex160an' },
               e(wordingField, {
                 id: 'language',
                 label: t('style.language'),
