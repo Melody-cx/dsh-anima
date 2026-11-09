@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.5'
+    const VERSION = '2.1.6'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -828,14 +828,11 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------------
 
     const css = [
-      // 底部空间只在「有未保存改动」时预留：那种状态下保存栏吸底（约 52px 高），
-      // 不留够它就会压住最后一行内容 —— 用户录屏里「还有 N 条」和保存栏叠在一行
-      // 就是这个原因。干净时保存栏是普通静态条，跟着内容滚，不需要预留。
-      //
-      // 这里用 data 属性而不是多加一个类名：保存栏的类名被 smoke-client 按
-      // `className === 'an-savebar'` 精确匹配（三处），加类会直接打挂它们。
-      '.an-root{display:flex;flex-direction:column;gap:16px;padding:4px 0 24px}',
-      '.an-root[data-an-dirty="true"]{padding-bottom:72px}',
+      // 底部不需要为吸底栏额外留空间：保存栏在文档流末尾，滚到底自然贴身。
+      // 之前这里有过一条 `.an-root[data-an-dirty="true"]{padding-bottom:72px}`，
+      // 实测有害 —— sticky 的粘住位置是按滚动容器的 padding box 算的，这 72px
+      // 会把吸底栏顶到离视口底 96px 的地方悬着（72 + 24），下面留一截空白。
+      '.an-root{display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}',
       // ── 分区导航 ──
       // 不再吸顶。原先是 position:sticky;top:0，理由是「翻到第三张卡时还看得见
       // 分区在哪一排」。实际代价是：宿主设置面板的滚动窗口只有约 722px
@@ -862,13 +859,23 @@ window.__ModuleLoader__.load({
       // 眼前 —— 那时用户最需要的正是「还有东西没存」这个提示和那颗按钮。
       // 用 data 属性而不是类名，因为三处 smoke-client 用例按 `className === 'an-savebar'`
       // 精确匹配这个节点。
-      '.an-savebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1))}',
+      // 干净态只是一行字 + 两个按钮，不该比正文更重：无框、无底色、无内边距。
+      '.an-savebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding:0}',
+      // 有未保存改动时才吸底，这时才需要底色把滚动内容挡住、需要一条顶线分隔。
+      '.an-savebar[data-an-dirty="true"]{padding:10px 14px;border-top:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
       '.an-savebar[data-an-dirty="true"]{position:sticky;bottom:0;z-index:20;box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
       '.an-savebar-text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
       '.an-savebar-text-dirty{color:var(--dsw-alias-state-warn-label,#d48806)}',
-      '.an-card{padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
-      '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}',
-      '.an-card-title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}',
+      // 卡片原来是「白底 + 1px 边框 + 8px 圆角 + 16px 内边距」的盒子。宿主亮色下
+      // bg-layer-1/2/3 全是 #fff，于是这个盒子和面板同色，只剩一圈灰线在提醒
+      // 「这里另起一块」—— 四张卡叠起来就是四个同心框，再套输入框的边框，一共三层。
+      // 改成「分段」：无底色、无边框、无圆角，靠一条发丝线和间距分组。
+      // 输入框现在是页面上唯一有实体的块，眼睛自然落到「能填的地方」。
+      '.an-card{padding:0;border:0;border-radius:0;background:transparent}',
+      // 第一张卡（分区首卡）不画顶线：它紧跟分区导航，多一条线只会显得断开。
+      '.an-card + .an-card{padding-top:20px;border-top:.5px solid var(--dsw-alias-border-l2)}',
+      '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}',
+      '.an-card-title{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--dsw-alias-label-primary);margin:0}',
       // 卡片**内部**的小节标题。原先这八处（体检、哪些记忆进了对话、导入外部记忆、
       // 把当前设置存为预设、运行计数、工作区覆盖里的三段）直接复用了 an-card-title，
       // 于是「体检」和顶层的「长期记忆」一样大 —— 视觉上等于另起一张卡，一屏里
@@ -880,15 +887,29 @@ window.__ModuleLoader__.load({
       '.an-card-desc{margin:4px 0 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}',
       '.an-field{margin-bottom:14px}',
       '.an-field:last-child{margin-bottom:0}',
-      '.an-field > label{display:block;margin-bottom:6px;font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
+      // 标签原来是 13px/500，比 12px 的正文大一档却更淡，读起来像「不太重要的提示」。
+      // 改成 12px/600：同字号、更重、更暗，一眼能分出「这是字段名」而不是正文。
+      '.an-field > label{display:block;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}',
       // 提示行必须有**基础**规则。原先只有 `.an-field .an-hintline` 一条后代规则，
       // 于是所有长在字段外面的提示（页头副标题、体检说明、巡逻/回扫的「还没查过」、
       // 工作区的「没选项目时…」、预设的保存提示……）全部没有样式，继承成 16px 纯黑，
       // 比正文还大。截图里那句「没选项目时，下面显示的是全局设置」就是这个样子。
       '.an-hintline{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
       '.an-field .an-hintline{margin-top:4px}',
-      '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
+      '.an-hintrow{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-top:4px}',
+      '.an-hintrow > .an-hintline{flex:1;min-width:0;margin:0}',
+      // 字数用满时变警示色。原来计数与提示同色同字号，满了也看不出来。
+      '.an-charcount-tight{color:var(--dsw-alias-state-warn-label,#d48806)}',
+      // 输入区靠**底色**分层，不靠灰线。宿主亮色的 bg-layer-1/2/3 全是 #fff，于是
+      // 卡片、输入框、面板底色一模一样，整页只能靠一圈 1px 边框区分「哪里能输入」——
+      // 实测人设区 40 个带边框的盒子、advanced 区 105 个，视觉上就是一片方框套方框。
+      // bg-module-platform 是宿主专为「嵌在面板里的控件」准备的底色（亮 #f5f6f7 / 暗 bluish-800），
+      // 比卡片底色深一档，于是输入区自己浮出来，边框可以退成透明。
+      '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid transparent;border-radius:6px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
+      '.an-input:hover,.an-textarea:hover,.an-select:hover{border-color:var(--dsw-alias-border-l2)}',
       '.an-textarea{min-height:88px;resize:vertical}',
+      // 短字段（上限 ≤300）用两行高度：三条并排时省下的正是纵向空间。
+      '.an-textarea-short{min-height:56px}',
       '.an-input:focus,.an-textarea:focus,.an-select:focus{outline:none;border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, transparent)}',
       '.an-select option{color:var(--dsw-alias-label-primary)}',
       // 键盘焦点必须看得见。原来全文件只有输入框的 :focus（鼠标点进去也有），
@@ -898,26 +919,38 @@ window.__ModuleLoader__.load({
       '.an-root :focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:4px}',
       // 「一键填入」按钮组 —— 旧版这里是下拉框，档位改成一段现成的说法之后，
       // 用一排小按钮比下拉更容易发现「原来还可以填这个」。
-      '.an-fill{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}',
+      '.an-fill{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;font-size:11px}',
       '.an-fill-label{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);margin-right:2px}',
-      '.an-chip{padding:2px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;font-family:inherit;cursor:pointer;white-space:nowrap}',
-      '.an-chip:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}',
+      // 示例之间用「·」隔开，读起来是一句话而不是一排按钮。
+      '.an-fill > .an-chip + .an-chip::before{content:"·";padding-right:4px;color:var(--dsw-alias-label-tertiary)}',
+      // 示例按钮原来是带边框的胶囊。实测人设区一共 14 个，350px 高、占该栏 16%，
+      // 压在 13 个字段之间 —— 一眼看过去满屏可点的方块，分不清哪些是「要填的」、
+      // 哪些只是「可以照抄的例子」。功能一个不动，只把它们的视觉权重降下来：
+      // 无边框、无底色、11px、次要色，跟正文同一行流下去，hover 才显出下划线。
+      '.an-chip{padding:0 0 0 0;margin:0;border:0;background:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:2px}',
+      '.an-chip:hover{color:var(--dsw-alias-brand-primary);text-decoration-color:currentColor}',
+      '.an-chip:disabled{opacity:.5;cursor:not-allowed}',
       '.an-root{color-scheme:light}',
       'body[data-ds-dark-theme] .an-root{color-scheme:dark}',
       '.an-row{display:flex;align-items:center;gap:8px}',
       '.an-row-between{display:flex;align-items:center;justify-content:space-between;gap:12px}',
       '.an-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
-      '.an-btn{padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}',
-      '.an-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
+      // 次要按钮不再描边：原来每个动作都是一颗「白底 + 1px 边框 + 6px 圆角」的小方块，
+      // 一屏二十几颗，眼睛分不清哪颗是一级操作。现在只有主按钮（保存 / 套用）和危险按钮
+      // （删除）保留形状，其余靠文字本身 + hover 底色表达可点。
+      '.an-btn{padding:6px 10px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}',
+      '.an-btn:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
       '.an-btn:disabled{opacity:.5;cursor:not-allowed}',
-      '.an-btn-primary{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);font-weight:500}',
+      '.an-btn-primary{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-brand-primary);font-weight:500}',
       '.an-btn-sm{padding:3px 10px;font-size:12px}',
       '.an-btn-danger{color:var(--dsw-alias-state-error-primary)}',
       '.an-btn-danger:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary)}',
       '.an-toggle-row{display:flex;align-items:center;gap:10px}',
       '.an-toggle-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;flex:0 0 auto}',
       '.an-toggle-row label{font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}',
-      '.an-badge{align-self:flex-start;font-size:11px;line-height:16px;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+      // 徽标原来描边 + 透明底，和按钮同一个视觉语言，一眼看不出「这是状态不是操作」。
+      // 改成浅底药丸：有形状但没有描边，读起来像标签。
+      '.an-badge{align-self:flex-start;font-size:11px;line-height:16px;padding:0 6px;border:0;border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-secondary);white-space:nowrap}',
       '.an-badge-ok{color:var(--dsw-static-green-500,#22c55e);border-color:color-mix(in srgb, var(--dsw-static-green-500,#22c55e) 45%, transparent)}',
       '.an-badge-src{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb, var(--dsw-alias-brand-primary) 45%, transparent)}',
       '.an-list{display:flex;flex-direction:column;gap:0;margin-top:8px}',
@@ -929,7 +962,9 @@ window.__ModuleLoader__.load({
       '.an-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
       '.an-empty{padding:14px 0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;color:var(--dsw-alias-state-error-primary);font-size:12px;box-sizing:border-box}',
-      '.an-note{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6}',
+      // 说明块同理：白底 + 灰框，在白色卡片上和正文分不开。改成左侧一条色条 + 透明底，
+      // 靠「缩进 + 色条」表示「这是附注」，不再多画一个盒子。
+      '.an-note{margin-top:8px;padding:6px 12px;border:0;border-left:2px solid var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6}',
       // ── 导入外部记忆（Phase ②）──
       // 面板刻意做成卡片内联展开而不是浮层弹窗：设置页本身已经在宿主设置面板里，
       // 再叠一层浮层会出现两个遮罩、两层 Esc 语义，而且浮层在窄面板里不好用。
@@ -974,7 +1009,9 @@ window.__ModuleLoader__.load({
       // 外形对齐下拉菜单而不是卡片：收起时只占**一行**（标题 + 条数 + 箭头），
       // 展开才铺开明细。原先是常驻 3 条预览，用户反馈「太大占位置」——
       // 那条预览每行都带「原值 → 新值」，一屏就被它吃掉三分之一。
-      '.an-recent{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}',
+      // 变更记录是「一条可展开的信息」，不是操作区；与分区导航同款白底描边会让两条框并排
+      // 像两个按钮组。改成上下各一条发丝线。
+      '.an-recent{border:0;border-top:.5px solid var(--dsw-alias-border-l2);border-bottom:.5px solid var(--dsw-alias-border-l2);border-radius:0;background:transparent;overflow:hidden}',
       '.an-recent-toggle{display:flex;align-items:center;gap:8px;width:100%;padding:7px 12px;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}',
       '.an-recent-toggle:hover{background:color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)}',
       '.an-recent-caret{flex:0 0 auto;width:10px;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .12s ease}',
@@ -1007,7 +1044,8 @@ window.__ModuleLoader__.load({
       '.an-input-color{flex:0 0 auto;width:38px;height:28px;padding:1px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;cursor:pointer}',
       // ── 卡片折叠 ──
       '.an-card-aside{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}',
-      '.an-card-toggle{flex:0 0 auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      // 收起/展开是每张卡都有的重复控件，描边会变成九个小方框；只留文字。
+      '.an-card-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-card-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       // ── 卡内子块（记忆卡的清单区）──
       //
@@ -1024,7 +1062,7 @@ window.__ModuleLoader__.load({
       // 实测「整理时刻」那格宽 506px = 卡片宽的 94%，视觉上像一块可以写长句的输入区。
       // 用一个专门的窄宽类收住它，宽度仍按内容对齐（同一列数字框等宽）。
       '.an-num{max-width:158px}',
-      '.an-block-toggle{flex:0 0 auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
+      '.an-block-toggle{flex:0 0 auto;padding:2px 6px;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-block-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       '.an-block-body{display:flex;flex-direction:column;gap:10px;margin-top:10px}',
       // ── 预览卡附注 ──
@@ -1068,6 +1106,9 @@ window.__ModuleLoader__.load({
       // 这是这个文件一贯的做法（见下方 an-flex240 那组注释），不引入媒体查询。
       '.an-gap16{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}',
       '.an-gap16wrap{display:flex;flex-wrap:wrap;gap:16px}',
+      // 多列字段排之间补纵向间距：里面的 .an-field 只有 margin-bottom，排与排之间是 0。
+      '.an-gap16wrap + .an-gap16wrap{margin-top:14px}',
+      '.an-gap16wrap + .an-field{margin-top:14px}',
       '.an-gap12wrap{display:flex;flex-wrap:wrap;gap:12px}',
       '.an-rowcenter{display:flex;gap:8px;align-items:center}',
       '.an-rowend{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}',
@@ -1095,27 +1136,27 @@ window.__ModuleLoader__.load({
       'page.desc': '这里管三件事：AI 叫什么、只对这个项目生效的设置、以及它会记住什么。',
 
       'identity.title': '助手身份',
-      'identity.desc': '描述 AI 自己是谁。与下面「用户背景」方向相反 —— 那段描述你，这段描述它。',
+      'identity.desc': '这段描述 AI 自己 —— 它是谁、叫什么、被要求怎么说话。',
       'identity.name': 'AI 的名字',
       'identity.nameHint': '这是 AI 给自己的名字，不是你对它的称呼（那个在下一张卡里）。留空就不告诉它自己叫什么。',
       // 不给示例按钮，就在这里说清楚格式 —— 见 lib/wording.mjs 的 FIELD_EXAMPLES
       // 注释：名字被一键填进来太容易被原样留下，然后长期叫错。
       'identity.namePlaceholder': '例如「小林」「阿哲」——两三个字，别用职位或昵称',
       'identity.role': '角色设定',
-      'identity.roleHint': '例如「资深架构师，先给结论再解释权衡」。上限 800 字。',
+      'identity.roleHint': '例如「资深架构师，先给结论再解释权衡」',
       'identity.enabled': '把助手身份告诉 AI',
       'identity.enabledHint': '关闭后，这段描述不再发给 AI —— 它也就不知道自己是谁。',
 
       'user.title': '用户背景',
-      'user.desc': '描述你本人。独立成段是为了不与上面的「助手身份」混读 —— 两段语义方向相反。',
+      'user.desc': '这段描述你自己 —— AI 该怎么称呼你、你是做什么的。',
       'user.address': '对用户的称呼',
       'user.addressHint': '留空则不写称呼。',
       'user.occupation': '你的职业',
       'user.bio': '关于你',
-      'user.bioHint': '身份、技术背景、当前在做的事。上限 500 字。',
+      'user.bioHint': '身份、技术背景、当前在做的事',
 
       'style.title': '回复风格与特质',
-      'style.desc': '这几项决定「怎么说」，与回答内容无关。填的就是要交给模型的原话，留空则表示不作要求。',
+      'style.desc': '这些决定它怎么说话，不影响它说什么。填的原样发给模型，留空就是不提要求。',
       'style.style': '回复风格',
       'style.headingLists': '标题和列表',
       'style.emoji': '表情符号',
@@ -1123,13 +1164,13 @@ window.__ModuleLoader__.load({
       'style.replyLength': '回复长度',
       'style.language': '回复语言',
       'style.styleHint': '一句话说清你想要什么语气。',
-      'style.fill': '一键填入',
+      'style.fill': '填入',
       'style.fillHint': '点一下把这段说法填进输入框，之后可以随意改。',
       'style.custom': '补充指令',
-      'style.customHint': '额外的行为准则。上限 2000 字。',
+      'style.customHint': '额外的行为准则',
       // 示例按钮组：身份与背景字段专用。与「一键填入」的区别写在按钮文案里 ——
       // 风格档位点一下就是定稿，示例点一下还得改成自己的情况。
-      'example.label': '示例（点一下填进去，改成你自己的）',
+      'example.label': '示例',
 
       'wording.professional': '专业严谨',
       'wording.casual': '轻松自然',
@@ -1550,25 +1591,25 @@ window.__ModuleLoader__.load({
       'page.desc': 'Three things live here: what the assistant calls itself, settings that only apply to this project, and what it remembers.',
 
       'identity.title': 'Assistant identity',
-      'identity.desc': 'Describes who the assistant is. Opposite in direction to "Your background" below — that card describes you, this one describes the assistant.',
+      'identity.desc': 'This describes the assistant — who it is, what it is called, how it should talk.',
       'identity.name': 'Assistant name',
       'identity.nameHint': 'The name the assistant calls itself — not how you address it (that is the next card). Leave empty and it will not be told its own name.',
       'identity.namePlaceholder': 'e.g. "Wally", "Nova" — a word or two, not a job title or a pet name',
       'identity.role': 'Role',
-      'identity.roleHint': 'For example "senior architect; conclusion first, then tradeoffs". Max 800 characters.',
+      'identity.roleHint': 'For example "senior architect; conclusion first, then tradeoffs"',
       'identity.enabled': 'Tell the assistant who it is',
       'identity.enabledHint': 'When off, this description is no longer sent — the assistant will not know who it is.',
 
       'user.title': 'Your background',
-      'user.desc': 'Describes you. It is a separate section so the model cannot merge it with the assistant identity above — the two point in opposite directions.',
+      'user.desc': 'This describes you — how the assistant should address you and what you do.',
       'user.address': 'How to address you',
       'user.addressHint': 'Leave empty for no salutation.',
       'user.occupation': 'Your occupation',
       'user.bio': 'About you',
-      'user.bioHint': 'Identity, technical background, what you are working on. Max 500 characters.',
+      'user.bioHint': 'Identity, technical background, what you are working on',
 
       'style.title': 'Reply style and traits',
-      'style.desc': 'These decide how answers read, not what they contain. What you type here is sent to the model verbatim; leave a field empty for no requirement.',
+      'style.desc': 'These decide how it talks, not what it says. What you type is sent verbatim; leave a field empty for no requirement.',
       'style.style': 'Style',
       'style.headingLists': 'Headings and lists',
       'style.emoji': 'Emoji',
@@ -1579,8 +1620,8 @@ window.__ModuleLoader__.load({
       'style.fill': 'Fill in',
       'style.fillHint': 'Click to drop that wording into the box, then edit it freely.',
       'style.custom': 'Extra instructions',
-      'style.customHint': 'Additional behaviour rules. Max 2000 characters.',
-      'example.label': 'Examples (click to fill, then make it yours)',
+      'style.customHint': 'Additional behaviour rules',
+      'example.label': 'Examples',
 
       'wording.professional': 'Professional',
       'wording.casual': 'Casual',
@@ -2214,6 +2255,17 @@ window.__ModuleLoader__.load({
     }
 
     function Hint(props) {
+      // 提示与计数分开：提示讲「这个框该填什么」，计数讲「还剩多少字」。原先两者用
+      // 全角空格拼在同一行（「身份、技术背景…　0/500」），一句话被拉成两截，
+      // 眼睛要多扫一次才能读出「0/500 不是这句话的一部分」。现在计数靠右。
+      if (props && props.count !== undefined) {
+        const [used, max] = String(props.count).split('/')
+        const tight = Number(used) >= Number(max)
+        return e('div', { className: 'an-hintrow' },
+          e('span', { className: 'an-hintline' }, emphasize(props.children)),
+          e('span', { className: tight ? 'an-charcount an-charcount-tight' : 'an-charcount' }, props.count)
+        )
+      }
       return e('div', { className: 'an-hintline' }, emphasize(props.children))
     }
 
@@ -2699,7 +2751,10 @@ window.__ModuleLoader__.load({
         e('label', { htmlFor: `an-${props.id}` }, props.label),
         e('textarea', {
           id: `an-${props.id}`,
-          className: 'an-textarea',
+          // 上限 300 的那几个字段（标题和列表 / 表情符号 / 表格 / 回复长度 / 回复语言）
+          // 实测填的是「增强」「简体中文」这种四个字，而 .an-textarea 的 88px 最小高度
+          // 是给几千字的补充指令准备的 —— 五个空格子加起来 440px，占人设栏近两成。
+          className: (limit ?? 0) > 0 && limit <= 300 ? 'an-textarea an-textarea-short' : 'an-textarea',
           value,
           maxLength: limit,
           placeholder: props.placeholder ?? '',
@@ -4758,7 +4813,7 @@ window.__ModuleLoader__.load({
               maxLength: limits.agentRole ?? 800,
               onChange: (event) => patchLocal('agentRole', event.target.value)
             }),
-            e(Hint, null, `${t('identity.roleHint')}　${(local.agentRole ?? '').length}/${limits.agentRole ?? 800}`),
+            e(Hint, { count: `${(local.agentRole ?? '').length}/${limits.agentRole ?? 800}` }, t('identity.roleHint')),
             e(examplePicker, {
               label: t('example.label'),
               options: exampleOptions(state, 'agentRole'),
@@ -4818,7 +4873,7 @@ window.__ModuleLoader__.load({
               maxLength: limits.userBio ?? 500,
               onChange: (event) => patchLocal('userBio', event.target.value)
             }),
-            e(Hint, null, `${t('user.bioHint')}　${(local.userBio ?? '').length}/${limits.userBio ?? 500}`),
+            e(Hint, { count: `${(local.userBio ?? '').length}/${limits.userBio ?? 500}` }, t('user.bioHint')),
             e(examplePicker, {
               label: t('example.label'),
               options: exampleOptions(state, 'userBio'),
@@ -4923,7 +4978,7 @@ window.__ModuleLoader__.load({
               maxLength: limits.customInstructions ?? 2000,
               onChange: (event) => patchLocal('customInstructions', event.target.value)
             }),
-            e(Hint, null, `${t('style.customHint')}　${(local.customInstructions ?? '').length}/${limits.customInstructions ?? 2000}`),
+            e(Hint, { count: `${(local.customInstructions ?? '').length}/${limits.customInstructions ?? 2000}` }, t('style.customHint')),
             e(examplePicker, {
               label: t('example.label'),
               options: exampleOptions(state, 'customInstructions'),
