@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.3'
+    const VERSION = '2.1.4'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -861,19 +861,37 @@ window.__ModuleLoader__.load({
       '.an-savebar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1))}',
       '.an-savebar[data-an-dirty="true"]{position:sticky;bottom:0;z-index:20;box-shadow:0 -6px 16px -12px rgba(0,0,0,.28)}',
       '.an-savebar-text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}',
-      '.an-savebar-text-dirty{color:var(--dsw-alias-label-warning,#d48806)}',
+      '.an-savebar-text-dirty{color:var(--dsw-alias-state-warn-label,#d48806)}',
       '.an-card{padding:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}',
       '.an-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}',
       '.an-card-title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary);margin:0}',
+      // 卡片**内部**的小节标题。原先这八处（体检、哪些记忆进了对话、导入外部记忆、
+      // 把当前设置存为预设、运行计数、工作区覆盖里的三段）直接复用了 an-card-title，
+      // 于是「体检」和顶层的「长期记忆」一样大 —— 视觉上等于另起一张卡，一屏里
+      // 出现好几个同等权重的标题，眼睛找不到主线。
+      // 卡片内的小节标题只有一个字号。之前这里是 12px、可折叠块的 .an-block-title
+      // 是 13px，同一张卡里六个同级小节实测出了两种大小（12/13），看起来像分属两层。
+      // 现在两边同用 .an-subhead：层级靠「字号 12 < 卡片标题 14」拉开，不靠彼此互相比。
+      '.an-subhead{font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--dsw-alias-label-secondary)}',
       '.an-card-desc{margin:4px 0 0 0;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}',
       '.an-field{margin-bottom:14px}',
       '.an-field:last-child{margin-bottom:0}',
       '.an-field > label{display:block;margin-bottom:6px;font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
-      '.an-field .an-hintline{margin-top:4px;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      // 提示行必须有**基础**规则。原先只有 `.an-field .an-hintline` 一条后代规则，
+      // 于是所有长在字段外面的提示（页头副标题、体检说明、巡逻/回扫的「还没查过」、
+      // 工作区的「没选项目时…」、预设的保存提示……）全部没有样式，继承成 16px 纯黑，
+      // 比正文还大。截图里那句「没选项目时，下面显示的是全局设置」就是这个样子。
+      '.an-hintline{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+      '.an-field .an-hintline{margin-top:4px}',
       '.an-input,.an-textarea,.an-select{width:100%;padding:8px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;box-sizing:border-box;font-family:inherit}',
       '.an-textarea{min-height:88px;resize:vertical}',
       '.an-input:focus,.an-textarea:focus,.an-select:focus{outline:none;border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 25%, transparent)}',
       '.an-select option{color:var(--dsw-alias-label-primary)}',
+      // 键盘焦点必须看得见。原来全文件只有输入框的 :focus（鼠标点进去也有），
+      // 按钮、tab、复选项一律没有焦点环 —— P4 加了分区 tab 的左右方向键漫游之后，
+      // 键盘用户按方向键能切换分区，但看不出焦点停在哪一栏。
+      // 用 :focus-visible 而不是 :focus：鼠标点击不该出现焦点环。
+      '.an-root :focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:4px}',
       // 「一键填入」按钮组 —— 旧版这里是下拉框，档位改成一段现成的说法之后，
       // 用一排小按钮比下拉更容易发现「原来还可以填这个」。
       '.an-fill{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}',
@@ -890,8 +908,8 @@ window.__ModuleLoader__.load({
       '.an-btn:disabled{opacity:.5;cursor:not-allowed}',
       '.an-btn-primary{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);font-weight:500}',
       '.an-btn-sm{padding:3px 10px;font-size:12px}',
-      '.an-btn-danger{color:var(--dsw-alias-label-error)}',
-      '.an-btn-danger:hover:not(:disabled){border-color:var(--dsw-alias-label-error)}',
+      '.an-btn-danger{color:var(--dsw-alias-state-error-primary)}',
+      '.an-btn-danger:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary)}',
       '.an-toggle-row{display:flex;align-items:center;gap:10px}',
       '.an-toggle-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--dsw-alias-brand-primary);cursor:pointer;flex:0 0 auto}',
       '.an-toggle-row label{font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}',
@@ -906,7 +924,7 @@ window.__ModuleLoader__.load({
       '.an-item-meta{margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary);display:flex;gap:8px;flex-wrap:wrap}',
       '.an-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
       '.an-empty{padding:14px 0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-label-error);border-radius:6px;color:var(--dsw-alias-label-error);font-size:12px;box-sizing:border-box}',
+      '.an-error{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;color:var(--dsw-alias-state-error-primary);font-size:12px;box-sizing:border-box}',
       '.an-note{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6}',
       // ── 导入外部记忆（Phase ②）──
       // 面板刻意做成卡片内联展开而不是浮层弹窗：设置页本身已经在宿主设置面板里，
@@ -923,12 +941,16 @@ window.__ModuleLoader__.load({
       '.an-import-item-text{flex:1;min-width:0;color:var(--dsw-alias-label-primary);line-height:1.6;word-break:break-word}',
       '.an-import-item-actions{display:flex;gap:6px;flex:0 0 auto;align-items:center}',
       '.an-import-summary{margin-top:8px;font-size:11px;line-height:1.7;color:var(--dsw-alias-label-tertiary)}',
-      '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-label-error);border-radius:6px;font-size:12px;line-height:1.7;color:var(--dsw-alias-label-error)}',
+      '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:6px;font-size:12px;line-height:1.7;color:var(--dsw-alias-state-error-primary)}',
       '.an-import-blocked code{font-size:11px;word-break:break-all}',
       '.an-pre{margin:8px 0 0 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-family:Consolas,Menlo,monospace}',
       '.an-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:8px 16px;border-radius:6px;font-size:13px;font-weight:500;z-index:10000;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;white-space:nowrap}',
-      '.an-toast-ok{background:#f6ffed;border:1px solid #b7eb8f;color:#52c41a}',
-      '.an-toast-err{background:#fff1f0;border:1px solid #ffa39e;color:#f5222d}',
+      // toast 原来写死了一套浅色（#f6ffed / #fff1f0）。它们没有任何暗色分支，
+      // 于是在深色主题下是一块刺眼的亮绿/亮粉。改成从语义 token 调出来：
+      // --dsw-alias-state-* 在亮/暗两套里各自有值，底色用 color-mix 压到
+      // 当前层底色上，深浅两套都能自洽，不需要再写一遍 dark 规则。
+      '.an-toast-ok{background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1)));border:1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);color:var(--dsw-alias-state-success-primary)}',
+      '.an-toast-err{background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1)));border:1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);color:var(--dsw-alias-state-error-primary)}',
       '.an-kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin-top:10px}',
       '.an-kv dt{color:var(--dsw-alias-label-tertiary)}',
       '.an-kv dd{margin:0;color:var(--dsw-alias-label-primary);word-break:break-all}',
@@ -990,13 +1012,20 @@ window.__ModuleLoader__.load({
       // 把那些数字搅乱。样式上它们确实长得像，但语义不同 —— 一层是页面结构，
       // 一层是同一张卡内部的清单开关。
       '.an-block-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}',
-      '.an-block-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
+      // 原来这里单独一条 13px 的 .an-block-title。改成复用 .an-subhead：卡片内所有
+      // 小节标题用同一个字号，否则「等你确认」13px 与「体检」12px 并排时会像是
+      // 两个不同层级的东西。
+      '.an-block-title{font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--dsw-alias-label-secondary)}',
+      // 数字框默认吃满整行（.an-input 是 width:100%），可里面只填「3」这一个数字。
+      // 实测「整理时刻」那格宽 506px = 卡片宽的 94%，视觉上像一块可以写长句的输入区。
+      // 用一个专门的窄宽类收住它，宽度仍按内容对齐（同一列数字框等宽）。
+      '.an-num{max-width:158px}',
       '.an-block-toggle{flex:0 0 auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:18px;cursor:pointer}',
       '.an-block-toggle:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}',
       '.an-block-body{display:flex;flex-direction:column;gap:10px;margin-top:10px}',
       // ── 预览卡附注 ──
       '.an-charcount{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
-      '.an-invalid{margin-top:6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-label-warning,#d48806);word-break:break-all}',
+      '.an-invalid{margin-top:6px;font-size:11px;line-height:1.6;color:var(--dsw-alias-state-warn-label,#d48806);word-break:break-all}',
       // ── 输入框快捷开关 ──
       '.an-quick-toggle{position:relative;isolation:isolate;display:inline-flex;align-items:center;gap:6px;min-height:28px;overflow:hidden;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;white-space:nowrap}',
       '.an-quick-toggle[data-enabled="true"]{color:var(--dsw-alias-brand-primary)}',
@@ -1008,8 +1037,8 @@ window.__ModuleLoader__.load({
       // ── 设置页导航图标（DOM 替换后由我们接管的那一格）──
       '[data-an-settings-nav] [data-an-icon-replaced]{display:block;flex:0 0 auto}',
       // ── 待确认提议条 ──
-      '.an-proposal{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-label-warning,#d48806);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6}',
-      '.an-proposal-title{font-weight:600;color:var(--dsw-alias-label-warning,#d48806)}',
+      '.an-proposal{margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-state-warn-label,#d48806);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font-size:12px;line-height:1.6}',
+      '.an-proposal-title{font-weight:600;color:var(--dsw-alias-state-warn-label,#d48806)}',
       '.an-proposal-detail{margin-top:6px;font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}',
       // ── 版式工具类 ──
       // 这些值是「排版常量」，不随状态变化，所以按 ocr 的 ts_js_tsx_jsx.md
@@ -1033,7 +1062,7 @@ window.__ModuleLoader__.load({
       // 改成给每个框一个 160px 的 flex-basis 并允许换行：内容区宽 532px 时三个框
       // 刚好还是一行（160×3 + 16×2 = 512），窄到装不下就自己掉成两行、一行。
       // 这是这个文件一贯的做法（见下方 an-flex240 那组注释），不引入媒体查询。
-      '.an-gap16{display:flex;flex-wrap:wrap;gap:16px}',
+      '.an-gap16{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}',
       '.an-gap16wrap{display:flex;flex-wrap:wrap;gap:16px}',
       '.an-gap12wrap{display:flex;flex-wrap:wrap;gap:12px}',
       '.an-rowcenter{display:flex;gap:8px;align-items:center}',
@@ -1229,6 +1258,7 @@ window.__ModuleLoader__.load({
       'mem.stateDropped': '已删除',
       'mem.stateHint': '「曾如此」= 你后来改过主意；「有争议」= 跟后来发生的事对不上、还没定论。两者说的都是过去，不是现在的样子。',
       // ── 记忆体检（只查机器能查的两件事）──
+      'checkup.title': '记忆体检',
       'checkup.run': '体检',
       'checkup.running': '正在查…',
       'checkup.done': '体检完成',
@@ -1313,6 +1343,7 @@ window.__ModuleLoader__.load({
       'quality.statsFindings': '判词',
       'quality.statsNone': '无',
       // ── 一键导入（Phase ②）──
+      'imp.title': '从别的 AI 搬过来',
       'imp.open': '导入外部 AI 的记忆',
       'imp.step1': '第 1 步：把下面这段话复制到别的 AI 的对话里',
       'imp.step1Hint': '在你用得最多的那个 AI 里发一次，让它把你的偏好整理成一份清单。',
@@ -1671,6 +1702,7 @@ window.__ModuleLoader__.load({
       'mem.stateDropped': 'removed',
       'mem.stateHint': '“was true” means you later changed your mind; “contested” means it clashes with later facts and has not been settled. Both describe the past, not the present.',
       // ── Memory checkup (only the two machine-checkable things) ──
+      'checkup.title': 'Memory checkup',
       'checkup.run': 'Check up',
       'checkup.running': 'Checking…',
       'checkup.done': 'Checkup done',
@@ -1754,6 +1786,7 @@ window.__ModuleLoader__.load({
       'quality.statsFindings': 'Findings',
       'quality.statsNone': 'none',
       // ── Import from another AI (Phase ②) ──
+      'imp.title': 'Bring over from another AI',
       'imp.open': 'Import memories from another AI',
       'imp.step1': 'Step 1 — copy this text into another AI conversation',
       'imp.step1Hint': 'Send it once in whichever AI you use most, and let it write up your preferences as a list.',
@@ -2154,8 +2187,32 @@ window.__ModuleLoader__.load({
       return e('pre', { className: 'an-pre' }, props.text ?? '')
     }
 
+    /**
+     * 把文案里的 `**强调**` 变成真正的加粗。
+     *
+     * 词典里有 97 条带 `**` 的写法（「保存的是当前**已保存**的设置」这类），
+     * 但渲染时一直当成普通字符，屏幕上就真的出现了两颗星。设置页不引 Markdown
+     * 解析器，只认这一种最小语法：非贪婪配对，配不上就原样输出，绝不吞字。
+     */
+    const EMPHASIS = /\*\*(.+?)\*\*/g
+    function emphasize(text) {
+      if (typeof text !== 'string' || text.indexOf('**') < 0) return text
+      const out = []
+      let cursor = 0
+      let match
+      EMPHASIS.lastIndex = 0
+      while ((match = EMPHASIS.exec(text)) !== null) {
+        if (match.index > cursor) out.push(text.slice(cursor, match.index))
+        out.push(e('strong', { key: `em-${match.index}` }, match[1]))
+        cursor = match.index + match[0].length
+      }
+      if (cursor === 0) return text
+      if (cursor < text.length) out.push(text.slice(cursor))
+      return out
+    }
+
     function Hint(props) {
-      return e('div', { className: 'an-hintline' }, props.children)
+      return e('div', { className: 'an-hintline' }, emphasize(props.children))
     }
 
     /**
@@ -2957,7 +3014,7 @@ window.__ModuleLoader__.load({
 
       return e('div', { className: 'an-field an-mt16' },
         e('div', { className: 'an-row-between' },
-          e('div', { className: 'an-card-title' }, t('inj.title')),
+          e('div', { className: 'an-subhead' }, t('inj.title')),
           e('button', {
             type: 'button',
             className: 'an-btn an-btn-sm',
@@ -3250,7 +3307,9 @@ window.__ModuleLoader__.load({
 
       return e('div', { className: 'an-mt16' },
         e('div', { className: 'an-row-between' },
-          e('div', { className: 'an-card-title' }, t('checkup.run')),
+          // 标题原先是 t('checkup.run')，和右边那颗按钮用的是同一个词 ——
+          // 实测渲染出来是「体检体检」叠在一起。小节名与动作名分开写。
+          e('div', { className: 'an-subhead' }, t('checkup.title')),
           e('button', {
             type: 'button',
             className: 'an-btn an-btn-sm',
@@ -3440,7 +3499,9 @@ window.__ModuleLoader__.load({
       }
 
       const header = e('div', { className: 'an-row-between' },
-        e('div', { className: 'an-card-title' }, t('imp.open')),
+        // 同上：标题与右侧按钮原先共用 imp.open，实测叠成
+        // 「导入外部 AI 的记忆导入外部 AI 的记忆」。
+        e('div', { className: 'an-subhead' }, t('imp.title')),
         e('button', {
           type: 'button',
           className: 'an-btn an-btn-sm',
@@ -4599,7 +4660,7 @@ window.__ModuleLoader__.load({
           e(Hint, null, t('preset.builtinHint')),
 
           e('div', { className: 'an-mt16' },
-            e('div', { className: 'an-card-title' }, t('preset.saveTitle')),
+            e('div', { className: 'an-subhead' }, t('preset.saveTitle')),
             e('div', { className: 'an-row an-rowgap8mt10' },
               e('div', { className: 'an-field an-flex200' },
                 e('input', {
@@ -5037,7 +5098,7 @@ window.__ModuleLoader__.load({
             return e('div', null,
                 e(Hint, null, t('ws.hint')),
 
-                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.identity')),
+                e('div', { className: 'an-subhead an-mt14' }, t('ws.section.identity')),
                 e('div', { className: 'an-field' },
                   e('label', { htmlFor: 'an-ws-name' }, t('identity.name')),
                   e('input', {
@@ -5060,7 +5121,7 @@ window.__ModuleLoader__.load({
                   })
                 ),
 
-                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.user')),
+                e('div', { className: 'an-subhead an-mt14' }, t('ws.section.user')),
                 e('div', { className: 'an-field' },
                   e('label', { htmlFor: 'an-ws-address' }, t('user.address')),
                   e('input', {
@@ -5094,7 +5155,7 @@ window.__ModuleLoader__.load({
                   })
                 ),
 
-                e('div', { className: 'an-card-title an-mt14' }, t('ws.section.style')),
+                e('div', { className: 'an-subhead an-mt14' }, t('ws.section.style')),
                 e(Hint, null, t('ws.styleHint')),
                 e('div', { className: 'an-row an-gap16wrap' },
                   e('div', { className: 'an-flex240an' },
@@ -5245,7 +5306,7 @@ window.__ModuleLoader__.load({
                 e('label', { htmlFor: 'an-mem-retro-days' }, t('mem.retrospectDays')),
                 e('input', {
                   id: 'an-mem-retro-days',
-                  className: 'an-input',
+                  className: 'an-input an-num',
                   type: 'number',
                   min: 1,
                   max: 365,
@@ -5259,7 +5320,7 @@ window.__ModuleLoader__.load({
             e('label', { htmlFor: 'an-mem-hour' }, t('mem.nightlyHour')),
             e('input', {
               id: 'an-mem-hour',
-              className: 'an-input',
+              className: 'an-input an-num',
               type: 'number',
               min: 0,
               max: 23,
@@ -5566,7 +5627,7 @@ window.__ModuleLoader__.load({
             e('label', { htmlFor: 'an-quality-max' }, t('quality.maxFindings')),
             e('input', {
               id: 'an-quality-max',
-              className: 'an-input',
+              className: 'an-input an-num',
               type: 'number',
               min: 1,
               max: 20,
@@ -5581,7 +5642,7 @@ window.__ModuleLoader__.load({
           // checks=0 时界面必须明说「没在工作」，不能因为「没有提醒 = 没问题」而显示得
           // 和一切正常一样 —— 那正是用户定的红线里最忌讳的那种谎报。
           e('div', { className: 'an-mt20' },
-            e('div', { className: 'an-card-title' }, t('quality.stats')),
+            e('div', { className: 'an-subhead' }, t('quality.stats')),
             (() => {
               const stats = state.qualityStats
               if (!stats) return e('div', { className: 'an-empty' }, t('quality.statsUnknown'))
