@@ -2866,6 +2866,23 @@ await test('分区导航：四栏都在、名字走词典、当前栏标 aria-se
   })
 })
 
+await test('分区导航：一直吸在顶部（滚下去还能切栏），底色不是 transparent', () => {
+  // 2.1.5 把 sticky 去掉了，理由是「四栏切换成本低、别占视口」。2.1.15 实测推翻：
+  // 人设栏内容 2168px、滚动上限 1422；scrollTop=600 时导航顶边 -482，=1422 时
+  // -1304，elementFromPoint 打不中任何一个 tab —— 滚下去就没法切栏，是可用性问题。
+  //
+  // 两条都要断：①吸顶本身；②底色不能是 transparent。少了②虽然还吸着，但卡片
+  // 会从导航底下透上来，等于把 tab 文字叠在正文上。
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  const rule = css.match(/\.an-sectnav\{([^}]*)\}/)
+  assert.ok(rule, '找不到 .an-sectnav 规则')
+  assert.ok(/position:sticky/.test(rule[1]), `分区导航不再吸顶了：${rule[1]}`)
+  assert.ok(/\btop:0\b/.test(rule[1]), `吸顶没写 top:0：${rule[1]}`)
+  const bg = (rule[1].match(/background:([^;}]*)/) || [])[1] || ''
+  assert.equal(bg.includes('transparent'), false, `吸顶栏用透明底，下面的卡片会透上来：${bg}`)
+  assert.ok(/var\(--dsw-alias-/.test(bg), `吸顶栏底色没走宿主 token：${bg}`)
+})
+
 await test('分区导航：键盘左右箭头能换栏（八条：←/→ 循环、Home/End 到两端、方向键不跳焦点、无 document 时不抛）', () => {
   // 这一组此前零覆盖：grep ArrowRight/onKeyDown/Home/End 在 scripts/ 下命中 0。
   // 键盘导航是 2.1.3 加的，加了四个月没有一个用例看过它。

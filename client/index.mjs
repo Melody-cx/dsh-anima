@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.14'
+    const VERSION = '2.1.15'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -840,13 +840,16 @@ window.__ModuleLoader__.load({
       // 的保存栏，上下两条常驻栏合计吃掉约 10% 的高度，且吸顶那条与面板自身的
       // 边缘只隔 4px，视觉上像贴了两层。
       //
-      // 现在改成跟着内容滚走：分区只有四栏、且切换成本很低（宿主左栏里灵台是
-      // 一整块），为了「随时能切」常驻一条栏并不划算。NN/g 讲 sticky header 的
-      // 第一条就是「先问到底需不需要它」。
-      // 原来是个白底 + 1px 边框 + 8px 圆角的横条，横贯整栏 —— 那是全页最后一块
-      // 「盒中盒」。输入框改成底色分层之后，它是唯一还剩实体的容器，视线会先落在这个
-      // 空框上。改成宿主 tab 的语言：无底无框，靠底部那条线区分选中。
-      '.an-sectnav{display:flex;flex-wrap:wrap;gap:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:transparent}',
+      // 2.1.5 一度把它改成跟着内容滚走，理由是「分区只有四栏、切换成本低」。
+      // 2.1.15 实测推翻了这个判断：人设栏内容 2168px、滚动上限 1422，滚到
+      // scrollTop=600 时导航已在 -482，=1422 时在 -1304，elementFromPoint 打不中
+      // 任何一个 tab —— 不是「多为难」，是滚下去就没法切栏。
+      //
+      // 所以恢复吸顶，但保持 2.1.5 定下的无框语言：不回到白底 + 1px 边框 + 8px
+      // 圆角的「盒中盒」，只用面板自身的底色（宿主 panel 就是 bg-layer-2：亮色
+      // #fff、暗色 rgb(44,44,46)）把滚过去的卡片盖住，靠底部那条发丝线收边。
+      // 这样既随时能切，又不新增一块实体容器。
+      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
       // margin-bottom:-1px 让按钮的 2px 底边压住导航那条 .5px 发丝线 —— 早一版用
       // inset 阴影画下划线，截图里它悬在发丝线上方 1px，像一块没对齐的补丁。
       '.an-sectnav-tab{margin:0 20px -1px 0;padding:7px 0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
