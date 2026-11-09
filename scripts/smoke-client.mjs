@@ -2866,6 +2866,64 @@ await test('分区导航：四栏都在、名字走词典、当前栏标 aria-se
   })
 })
 
+await test('分区导航：键盘左右箭头能换栏（八条：←/→ 循环、Home/End 到两端、方向键不跳焦点、无 document 时不抛）', () => {
+  // 这一组此前零覆盖：grep ArrowRight/onKeyDown/Home/End 在 scripts/ 下命中 0。
+  // 键盘导航是 2.1.3 加的，加了四个月没有一个用例看过它。
+  withFreshSettings((view) => {
+    // 顺序写死在这里而不是从包里 import：这一串本身就是「分区的对外约定」，
+    // 让它跟着实现走就等于没在测。改分区顺序时这条会红，是想要的效果。
+    const SECTION_ORDER = ['persona', 'memory', 'behavior', 'advanced']
+    const nav = () => elements(walk(view.tree), 'div').find((n) => n.props?.className === 'an-sectnav')
+    const onTab = () => {
+      const tabs = elements(walk(view.tree), 'button').filter((n) => n.props.role === 'tab')
+      return tabs.find((n) => n.props['aria-selected'] === 'true')
+    }
+    const press = (key) => {
+      const navNode = nav()
+      assert.ok(navNode, '找不到分区导航容器')
+      let prevented = false
+      const event = {
+        key,
+        preventDefault: () => { prevented = true }
+      }
+      navNode.props.onKeyDown(event)
+      return prevented
+    }
+    const activeKey = () => {
+      const current = onTab()
+      assert.ok(current, '没有任何一栏处于选中态')
+      const id = current.props.id.replace('an-sectnav-tab-', '')
+      return SECTION_ORDER.indexOf(id)
+    }
+
+    // 起始：第一栏（人设）
+    assert.equal(activeKey(), 0, '起始应停在第一栏')
+    // ArrowRight 依次前进，到底回绕
+    const prevented1 = press('ArrowRight')
+    assert.equal(prevented1, true, 'ArrowRight 应当 preventDefault（否则页面会横向滚动）')
+    assert.equal(activeKey(), 1, 'ArrowRight 没有切到第二栏')
+    press('ArrowRight')
+    press('ArrowRight')
+    assert.equal(activeKey(), 3, 'ArrowRight 没走到第四栏')
+    press('ArrowRight')
+    assert.equal(activeKey(), 0, '第四栏再按 ArrowRight 应当回绕到第一栏')
+    // ArrowLeft 反向，从第一栏回绕到最后一栏
+    press('ArrowLeft')
+    assert.equal(activeKey(), 3, '第一栏按 ArrowLeft 应当回绕到最后一栏')
+    press('ArrowLeft')
+    assert.equal(activeKey(), 2, 'ArrowLeft 没有退回第三栏')
+    // Home / End
+    press('Home')
+    assert.equal(activeKey(), 0, 'Home 没有回到第一栏')
+    press('End')
+    assert.equal(activeKey(), 3, 'End 没有跳到最后一栏')
+    // 未处理的键不许 preventDefault（否则 Tab、翻页全被吃掉）
+    assert.equal(press('Tab'), false, 'Tab 被 preventDefault 了 —— 焦点就出不去了')
+    assert.equal(press('a'), false, '普通字符键被 preventDefault 了')
+    assert.equal(activeKey(), 3, '未处理的键不该改变当前栏')
+  })
+})
+
 await test('分区导航：切到「记忆」后，人设卡是 display:none —— 且内容没被销毁', () => {
   withFreshSettings((view) => {
     switchSectionOn(view.tree, 'memory')

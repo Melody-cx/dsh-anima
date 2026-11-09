@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.11'
+    const VERSION = '2.1.12'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -950,7 +950,11 @@ window.__ModuleLoader__.load({
       // 无边框、无底色、11px、次要色，跟正文同一行流下去，hover 才显出下划线。
       // 下划线常态就在，只是很淡（border-l3 那档灰）：去掉边框之后如果连下划线也只在
       // hover 才出现，触屏和键盘用户根本没有「这里可以点」的信号。
-      '.an-chip{padding:0;margin:0;border:0;background:none;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));text-underline-offset:3px}',
+      // 原本是 white-space:nowrap。宿主面板窄到 shell 420（内容区 160px）时，
+      // 「研究生在读，方向是自然语言处…」这条 162px 的示例会横向溢出 2px 出容器。
+      // 允许换行 + max-width:100% 后它自己折成两行，标签不再被裁。
+      // 正常宽度下每条示例本来就只有几十像素，这条改动看不出来。
+      '.an-chip{padding:0;margin:0;border:0;background:none;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.5;font-family:inherit;cursor:pointer;white-space:normal;max-width:100%;text-decoration:underline;text-decoration-color:var(--dsw-alias-border-l3,var(--dsw-alias-border-l2));text-underline-offset:3px}',
       '.an-chip:hover{color:var(--dsw-alias-brand-primary);text-decoration-color:currentColor}',
       '.an-chip:disabled{opacity:.5;cursor:not-allowed}',
       '.an-root{color-scheme:light}',
@@ -2336,6 +2340,10 @@ window.__ModuleLoader__.load({
       // 一个已变成 tabIndex=-1 的元素里，下一次按 Tab 的落点会跳得很意外。
       const focusTab = (id) => {
         if (typeof document === 'undefined') return
+        // 只判 document 不够：宿主可能只给了部分 DOM 能力（渲染树单测里就是
+        // 这种局面，document 没有 getElementById）。缺这个函数时静默跳过焦点，
+        // 选中逻辑照常走 —— 键盘换栏不能因为「带不过去焦点」整个失效。
+        if (typeof document.getElementById !== 'function') return
         const node = document.getElementById(`an-sectnav-tab-${id}`)
         if (node && typeof node.focus === 'function') node.focus()
       }
@@ -4751,7 +4759,11 @@ window.__ModuleLoader__.load({
           )
         },
           e('div', { className: 'an-row an-rowend' },
-            e('div', { className: 'an-field an-flex240' },
+            // 基准 0 而不是 240：宿主面板宽度是 `max-width:calc(100vw - 48px)`，
+            // 窄到 shell 540 时内容区只剩 280px，240 的基准会让这个字段吃满整行，
+            // 「套用」按钮被挤到第二行靠左（实测行高 59 → 98）。基准 0 只参与
+            // 分配剩余空间，按钮永远和下拉同一行。同 .an-flexfill1 那组注释。
+            e('div', { className: 'an-field an-flexfill' },
               e('label', { htmlFor: 'an-preset-pick' }, t('preset.pick')),
               e('select', {
                 id: 'an-preset-pick',
