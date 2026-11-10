@@ -1790,6 +1790,22 @@ await test('预览卡：字符数与被校验挡下的草稿字段清单都会�
   assert.ok(hint, '缺字符数提示')
   assert.ok(hint.includes(`: ${body.length}`), `字符数与正文对不上：${hint} / ${body.length}`)
 
+  // 2.1.19：预览正文套上宿主「代码块」外壳（圆角卡片 + 标题栏 + 复制）。
+  // 外壳归外壳，<pre class="an-pre"> 仍是纯文本节点，上面的字符数断言才成立；
+  // 标题栏里必须有复制按钮 —— 「可以少显示但是不能少功能」。
+  const previewBlock = byClass(inner, 'an-codeblock')[0]
+  assert.ok(previewBlock, '预览正文没套上代码块外壳')
+  assert.ok(byClass(inner, 'an-codeblock-head').length >= 1, '预览代码块缺标题栏')
+  assert.equal(
+    byClass(inner, 'an-codeblock-label')[0]?.props.children,
+    dict.zh['code.preview'],
+    '预览代码块标题文案不对'
+  )
+  const previewCopy = byClass(inner, 'an-codeblock-copy')[0]
+  assert.ok(previewCopy, '预览代码块标题栏里没有复制按钮')
+  assert.equal(previewCopy.props.children, dict.zh['code.copy'], '预览复制按钮文案不对')
+  assert.equal(typeof previewCopy.props.onClick, 'function', '预览复制按钮没接上 onClick')
+
   // ② 被校验挡下的草稿字段：宿主会在响应里带一份 invalid 清单。
   //    预览刻意不为半截输入报错，但静默忽略更糟 —— 用户会以为「预览里就是这样」。
   const savedInvalid = PREVIEW_PAYLOAD.invalid
@@ -1886,9 +1902,24 @@ await test('导入面板：默认不展开，展开后两步都在，第 1 步�
   assert.ok(prompt, '提示词容器不存在')
   assert.equal(prompt.props.children, STATE_PAYLOAD.memoryImport.prompt)
 
+  // 2.1.19：提示词套上代码块外壳，原本那颗独立的复制按钮挪进标题栏。
+  // 外壳不能吞掉正文（<pre class="an-import-prompt"> 与纯文本 children 必须还在），
+  // 复制按钮的文案与点击行为也一个都不能少 —— 「可以少显示但是不能少功能」。
+  const promptBlock = byClass(nodes(), 'an-codeblock')[0]
+  assert.ok(promptBlock, '导入提示词没套上代码块外壳')
+  assert.equal(
+    byClass(nodes(), 'an-codeblock-label')[0]?.props.children,
+    dict.zh['code.prompt'],
+    '导入代码块标题文案不对'
+  )
+
   // 复制按钮：无剪贴板时不能说「已复制」（那是在骗用户）
   const copy = elements(nodes(), 'button').find((n) => n.props.children === dict.zh['imp.copy'])
   assert.ok(copy, '缺复制按钮')
+  assert.ok(
+    String(copy.props.className || '').includes('an-codeblock-copy'),
+    '复制按钮没挪进代码块标题栏'
+  )
   copy.props.onClick()
   await flush()
   assert.equal(
@@ -2961,6 +2992,28 @@ await test('分区导航：吸顶栏与正文列同宽同起点（不额外铺�
     !/\d+(?:\.\d+)?px/.test(padding),
     `吸顶栏不该有水平 padding（它和负 margin 是一对，撤了 margin 就得一起撤）：padding=${padding}`
   )
+})
+
+await test('代码块：圆角、左右内缩露底、底色走宿主 token、正文无 1px 描边', () => {
+  // 2.1.19 把导入提示词与预览装配结果改成宿主「代码块」那种观感。
+  // 断四件可证伪的事：①有圆角 ②左右有正 margin（露出父容器/面板底色，圆角才看得见）
+  // ③底色走 --dsw-alias-markdown-code-block 语义 token（亮/暗自动跟随）④正文 pre 不带
+  // border（原来两条规则各带 1px 描边，是「盒中盒」的来源）。
+  const css = styleTags.map((tag) => tag.textContent).join('\n')
+  const block = css.match(/\.an-codeblock\{([^}]*)\}/)
+  assert.ok(block, '找不到 .an-codeblock 规则')
+  const body = block[1]
+  assert.ok(/border-radius:/.test(body) && /var\(--dsw-radius/.test(body), `代码块没写圆角：${body}`)
+  const bg = (body.match(/background:([^;}]*)/) || [])[1] || ''
+  assert.ok(/var\(--dsw-alias-markdown-code-block/.test(bg), `代码块底色没走宿主代码块 token：${bg}`)
+  const margin = (body.match(/(?:^|;)\s*margin:([^;}]*)/) || [])[1] || ''
+  const h = margin.trim().split(/\s+/)
+  assert.ok(h.length >= 2 && /^\d/.test(h[1]) && /^\d/.test(h[3] ?? h[1]),
+    `代码块左右没有内缩，圆角会看不见：margin=${margin}`)
+  const preRule = css.match(/\.an-codeblock > pre\{([^}]*)\}/)
+  assert.ok(preRule, '找不到 .an-codeblock > pre 规则')
+  assert.ok(/border:0/.test(preRule[1]), `正文还带着描边：${preRule[1]}`)
+  assert.ok(/background:transparent/.test(preRule[1]), `正文没透出卡片底色：${preRule[1]}`)
 })
 
 await test('吸底保存栏：把内边距一起抵消掉，滚到底时贴着容器底（不悬空）', () => {

@@ -9,6 +9,48 @@
 
 ---
 
+## [2.1.19] - 2026-11-10
+
+### 改进
+
+- **设置页里两块等宽正文改成宿主「代码块」的样子**。原先 `an-import-prompt`（导入提示词）
+  和 `an-pre`（AI 实际看到的内容）都是「白底 + 1px 描边 + 8px 圆角」的光板 pre，
+  底色与卡片几乎同色，圆角根本看不出来。新增纯展示组件 `CodeBlock`：
+  圆角 12px、左右各内缩 12px 让父容器底色露出来、顶部一条标题栏（左标签 + 右复制按钮）、
+  正文无 1px 描边、等宽字体、底色直接取宿主的 `--dsw-alias-markdown-code-block`。
+  用户原话（m05335）：「圆角加左右都有一部分深色渲染」。
+- 底色用宿主语义 token 而不是写死颜色：亮色 `#f9fafb`、暗色 `#1b1b1c`（即参考图里实测的 rgb(27,27,28)），
+  标题栏取 `--dsw-alias-markdown-code-block-banner`，亮暗自动跟随，不用自己写媒体查询。
+  `--dsw-radius-*` 在宿主 token 表里 0 条定义，所以用 `var(--dsw-radius-md,12px)` 带兜底。
+- **功能不减**：导入块的复制按钮从第一步标题行挪进代码块标题栏，仍是 `t('imp.copy')` 文案、
+  仍调 `copyPrompt`（失败提示 `imp.copyFailed` 不变）；预览块新增一个「复制」按钮，
+  复用页面已有的 toast 反馈（`setToast`），零新增 useState。两块正文的 `<pre>` 元素与
+  `an-import-prompt` / `an-pre` 类名都保留，老测试断言照旧命中。
+- 新增 3 个 i18n 键（zh/en 各 3）：`code.prompt`「提示词」、`code.preview`「装配结果」、
+  `code.copy`「复制」。
+
+### 验证
+
+- 无头 Edge 实测（`_tmp/visui/cb.cjs`，亮/暗各一张）：
+  卡片 x248 w516，圆角 `12px`，左右各露 36px 底色；亮色底 `rgb(249,250,251)`、
+  暗色底 `rgb(27,27,28)`、暗色标题栏 `rgb(44,44,46)`；正文 `border:0`、
+  `background:transparent`、字体 `Consolas,Menlo,monospace`；标签「装配结果」、复制按钮「复制」都在。
+  截图 `cb-light.png` / `cb-dark.png` 肉眼确认圆角与左右露底都出来了。
+- `node scripts/verify-core.mjs` → PASSED all 255
+- `node scripts/smoke-host.mjs` → PASSED all 113
+- `node scripts/smoke-client.mjs` → 通过 85 项，PASSED（新增 1 条 CSS 用例 + 2 处 DOM 断言）
+- `node scripts/check-client-i18n.mjs` → zh=400 en=400，305 个字面 key + 5 个前缀式 key，对称
+- `node scripts/check-live.mjs http://127.0.0.1:49720` → PASSED all 38
+- 反向验证：把 `.an-codeblock` 的 `margin:10px 12px 12px` 改回 `margin:0` →
+  恰好「代码块：圆角、左右内缩露底…」这一条 FAIL、其余 84 项通过；恢复后 85 项全绿。
+
+### 没做
+
+- 没改 `.an-proposal-detail`（提议详情那块等宽文本），它是另一条独立规则，且不在用户指的两块里。
+- 没删 `Pre` 组件：还有别的调用点可能用，删它属于额外动作。
+
+---
+
 ## [2.1.18] - 2026-11-10
 
 ### 修复

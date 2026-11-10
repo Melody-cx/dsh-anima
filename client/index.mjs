@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.18'
+    const VERSION = '2.1.19'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -1014,7 +1014,19 @@ window.__ModuleLoader__.load({
       '.an-import{margin-top:10px;padding:12px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1)}',
       '.an-import-step{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}',
       '.an-import-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
-      '.an-import-prompt{margin:0 0 12px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-base,rgba(127,127,127,.06));color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.7;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-family:inherit}',
+      // 等宽正文块（导入提示词 / 预览装配结果）改成宿主「代码块」那种观感：
+      // 内缩的圆角卡片 + 标题栏（左标签、右复制）。左右各留 12px 露出父容器底色，
+      // 圆角才看得见 —— 原来两条规则都带 1px 描边且底色≈面板，圆角等于白画。
+      // 底色用宿主的 markdown-code-block 语义 token：参考图暗色卡片内部
+      // rgb(27,27,28) 正好等于它的暗色值（bluish-900），亮/暗自动跟随，不用写 dark 分支。
+      '.an-codeblock{margin:10px 12px 12px;border:0;border-radius:var(--dsw-radius-md,12px);background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-module-platform,rgba(127,127,127,.08)));overflow:hidden}',
+      '.an-codeblock-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 14px;background:var(--dsw-alias-markdown-code-block-banner,transparent);border-bottom:1px solid var(--dsw-alias-border-l2)}',
+      '.an-codeblock-label{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+      '.an-codeblock-copy{padding:3px 8px;border:0;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}',
+      '.an-codeblock-copy:hover{background:var(--dsw-alias-interactive-bg-hover-solid,rgba(127,127,127,.12))}',
+      '.an-codeblock > pre{margin:0;padding:12px 14px;border:0;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;word-break:break-word;overflow:auto}',
+      // 两条正文规则只留差异（行高/字高/字体），盒子、底色、边框交给 .an-codeblock 统一管。
+      '.an-import-prompt{line-height:1.7;max-height:220px;font-family:inherit}',
       '.an-import-divider{margin:14px 0;border:0;border-top:1px solid var(--dsw-alias-border-l2)}',
       // 切出来的条目：一行一条，行内可改层级。改层级用两个小按钮而不是下拉 ——
       // 只有两种取值，下拉要多一次点击才能看到「原来还能选」。
@@ -1025,7 +1037,7 @@ window.__ModuleLoader__.load({
       '.an-import-summary{margin-top:8px;font-size:11px;line-height:1.7;color:var(--dsw-alias-label-secondary)}',
       '.an-import-blocked{margin-top:8px;padding:8px 12px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:var(--dsw-radius-sm,8px);font-size:12px;line-height:1.7;color:var(--dsw-alias-state-error-primary)}',
       '.an-import-blocked code{font-size:11px;word-break:break-all}',
-      '.an-pre{margin:8px 0 0 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,8px);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;font-family:Consolas,Menlo,monospace}',
+      '.an-pre{line-height:1.6;max-height:260px;font-family:Consolas,Menlo,monospace}',
       '.an-toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:8px 16px;border-radius:var(--dsw-radius-sm,8px);font-size:13px;font-weight:500;z-index:10000;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;white-space:nowrap}',
       // toast 原来写死了一套浅色（#f6ffed / #fff1f0）。它们没有任何暗色分支，
       // 于是在深色主题下是一块刺眼的亮绿/亮粉。改成从语义 token 调出来：
@@ -1461,6 +1473,10 @@ window.__ModuleLoader__.load({
       'imp.copy': '复制这段话',
       'imp.copied': '已复制',
       'imp.copyFailed': '复制失败，请手动选中后复制',
+      // 代码块外壳（导入提示词 / 预览装配结果）的标题栏文案
+      'code.prompt': '提示词',
+      'code.preview': '装配结果',
+      'code.copy': '复制',
       'imp.step2': '第 2 步：把结果粘贴到下面',
       'imp.placeholder': '在此粘贴你的记忆（也可以直接粘贴自己的笔记，不必非得是 AI 生成的）',
       'imp.parse': '解析',
@@ -1904,6 +1920,10 @@ window.__ModuleLoader__.load({
       'imp.copy': 'Copy this text',
       'imp.copied': 'Copied',
       'imp.copyFailed': 'Copy failed — select the text and copy it manually',
+      // Code-block shell (import prompt / assembled preview) header labels
+      'code.prompt': 'Prompt',
+      'code.preview': 'Assembled prompt',
+      'code.copy': 'Copy',
       'imp.step2': 'Step 2 — paste the result below',
       'imp.placeholder': 'Paste your memories here (own notes are fine too — it need not come from an AI)',
       'imp.parse': 'Parse',
@@ -2295,6 +2315,28 @@ window.__ModuleLoader__.load({
 
     function Pre(props) {
       return e('pre', { className: 'an-pre' }, props.text ?? '')
+    }
+
+    // 导入提示词与预览装配结果共用这一层「代码块」外壳。刻意做成纯展示组件：
+    // 不持有 hook、不调用 t —— 标签与复制文案全由调用方传进来。因为 smoke-client
+    // 的 walk() 会就地调用函数组件再递归，里面若有 useState 会挤掉渲染树的 hook 槽位。
+    // <pre> 的 className 由 bodyClass 决定（an-import-prompt / an-pre），children 是
+    // 纯文本 —— 这两点是冒烟里按类名取正文、按文本长度算字符数的断言能命中的前提。
+    function CodeBlock(props) {
+      return e('div', { className: 'an-codeblock' },
+        e('div', { className: 'an-codeblock-head' },
+          e('span', { className: 'an-codeblock-label' }, props.label),
+          props.onCopy
+            ? e('button', {
+              type: 'button',
+              className: 'an-codeblock-copy',
+              onClick: props.onCopy,
+              title: props.copyLabel
+            }, props.copyLabel)
+            : null
+        ),
+        e('pre', { className: props.bodyClass }, props.text ?? '')
+      )
     }
 
     /**
@@ -3800,14 +3842,18 @@ window.__ModuleLoader__.load({
             e('div', null,
               e('div', { className: 'an-import-title' }, t('imp.step1')),
               e(Hint, null, t('imp.step1Hint'))
-            ),
-            e('button', {
-              type: 'button',
-              className: 'an-btn an-btn-sm',
-              onClick: copyPrompt
-            }, copyLabel)
+            )
           ),
-          e('pre', { className: 'an-import-prompt' }, spec.prompt),
+          // 复制按钮挪进代码块的标题栏，跟宿主「代码块」一个样子。
+          // 文案仍是 copyLabel（t('imp.copy') / t('imp.copied')），onClick 仍是 copyPrompt，
+          // 所以冒烟里按文案找按钮、点下去查 copyFailed 的那条用例照样命中。
+          e(CodeBlock, {
+            label: t('code.prompt'),
+            bodyClass: 'an-import-prompt',
+            text: spec.prompt,
+            onCopy: copyPrompt,
+            copyLabel
+          }),
 
           e('hr', { className: 'an-import-divider' }),
 
@@ -5912,13 +5958,35 @@ window.__ModuleLoader__.load({
             )
           })()
 
+          // 预览正文的复制：复用设置页已有的 toast 与 t，不再新开 useState ——
+          // 这个 IIFE 与 toast（4183）/ previewText（4660）同在 AnimaSettings 作用域里，
+          // 闭包直接拿得到。功能不减：原来能不能复制，现在照样能，只是按钮换了位置。
+          const copyPreview = async () => {
+            try {
+              const clipboard = globalThis.navigator?.clipboard
+              if (!clipboard || typeof clipboard.writeText !== 'function') throw new Error('no clipboard')
+              await clipboard.writeText(previewText)
+              setToast({ kind: 'ok', text: t('imp.copied') })
+            } catch {
+              setToast({ kind: 'err', text: t('imp.copyFailed') })
+            }
+          }
+
           const previewBody = (() => {
             if (!previewOpen) return null
             let textBlock = null
             if (state.previewLoading && !previewText) {
               textBlock = e('div', { className: 'an-empty' }, t('preview.loading'))
             } else if (previewText) {
-              textBlock = e(Pre, { text: previewText })
+              // 换成 CodeBlock：圆角 + 左右露底 + 标题栏带复制。<pre> 仍带 an-pre，
+              // children 仍是 previewText —— 冒烟按类名取正文、按长度算字符数不受影响。
+              textBlock = e(CodeBlock, {
+                label: t('code.preview'),
+                bodyClass: 'an-pre',
+                text: previewText,
+                onCopy: copyPreview,
+                copyLabel: t('code.copy')
+              })
             } else {
               textBlock = e('div', { className: 'an-empty' }, t('preview.empty'))
             }
