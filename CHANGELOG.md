@@ -9,6 +9,63 @@
 
 ---
 
+## [2.1.20] - 2026-11-10
+
+### 改进
+
+- **分区导航从「横贯整行的深色带」改成一条短圆角胶囊，四周露出面板底色**。用户原话（m05692）：
+  `这里要改它改成圆角加露出底色然后剪短他的这行整个调整`。
+  2.1.19 及之前 `.an-sectnav` 是整行宽的实心条，四个 tab 之间还压着一条发丝线，
+  真机截图（m05690）里橙圈圈出的就是它。现在拆成两层：外层 `.an-sectnav` 仍是
+  整行宽的 sticky 占位层（与正文列同宽同起点、用面板底色挡住滚上来的卡片），内层
+  `.an-sectnav-inner` 才是一条 `display:inline-flex` 的短胶囊 —— 只占内容宽、
+  `border-radius:var(--dsw-radius-md,12px)`、四周正 margin 露出父容器底色、底色取宿主的
+  `--dsw-alias-markdown-code-block`（亮 `#f9fafb` / 暗 `#1b1b1c`，与代码块同源）。
+  四个 tab 改成 `padding:6px 16px` 的小圆角块，选中态用
+  `color-mix(in srgb, ...banner 82%, label-primary)` —— 因为亮色下 code-block 与它的
+  banner 是同一个 `#f9fafb`，直接拿 banner 当选中底会完全看不见。
+- **外层整宽占位层是刻意保留的，不是又退回「铺满」**。2.1.15 实测过：滚动 1422px 后
+  导航会跑到 -1304px、中段完全切不了栏（2168px / -482 / -882 / -1304 四个数）。试渲染否决过两条：
+  D 用 `box-shadow:0 0 0 100vmax` 铺遮罩会把下方正文一起盖成面板色；E 只靠悬浮投影则
+  右侧滚来的「用职位或昵称」贴着胶囊右缘被切掉半截。G/H 的「整宽不透明占位层 + 内层短胶囊」
+  是唯一同时满足剪短、露底、吸顶可用、不硬切正文的结构。
+- 2.1.17 / 2.1.18 的负 margin 老路继续封死：外层 margin 不许负、padding 不许有 px 值
+  （否则深色带又比页头标题、卡片、变更记录各宽 24px，实测 nav 212..800 vs 正文 236..776）。
+- a11y 与功能不减：内层挂 `role="presentation"`，四个 tab 的 `id` /
+  `aria-controls` / `aria-selected` / `tabIndex` / 左右箭头、Home/End
+  键盘漫游全部原样保留；`position:sticky;top:0` 不变。
+
+### 验证
+
+- 无头 Edge 用**当前落盘源码**重建复刻页（`ANIMA_SECTION=persona node base.mjs` →
+  `page-persona.html`，66175 字节）后实测（`navfinal.cjs`）：
+  外层 nav `x236 y118 w540 h48`、内层胶囊 `x236 y124 w246 h40`（确实剪短）、
+  圆角 `12px`；亮色 navBg `rgb(255,255,255)` / 胶囊 `rgb(249,250,251)`、
+  暗色 navBg `rgb(44,44,46)` / 胶囊 `rgb(27,27,28)`（四周露底可见）；
+  吸顶后 nav `x236 y54`、inner `x236 y60`，`hitRight` 命中 `an-sectnav`（占位层挡住滚上来的卡片）、
+  `insidePill` 命中选中的 tab（仍可点）。截图 `nav-final-light.png` /
+  `nav-final-dark.png` / `nav-final-stuck-dark.png` 肉眼确认。
+- 460 窄屏（`navnarrow.cjs`）：nav `x456 w200 h82`、inner `x456 w200 h74`，
+  四个 tab 自动折成两行、最后一个 tab 仍在胶囊内（lastTabBottom 227 < innerBottom 231），
+  吸顶后 `y60` 仍粘住；截图 `nav-real-460-dark.png`。
+- `node scripts/verify-core.mjs` → PASSED all 255
+- `node scripts/smoke-host.mjs` → PASSED all 113
+- `node scripts/smoke-client.mjs` → 通过 85 项，PASSED（原「同宽同起点」用例改写成
+  「占位层与正文同起点，内层才是短圆角胶囊」，新增 5 条 CSS 断言 + 3 条 DOM 断言）
+- `node scripts/check-client-i18n.mjs` → 305 个字面 key + 5 个前缀式 key，zh/en 对称
+- `node scripts/check-live.mjs http://127.0.0.1:49720` → PASSED all 38
+- 反向验证：把 `.an-sectnav-inner` 退化成 `display:flex;margin:0;padding:0` 的整行带 →
+  恰好「占位层与正文同起点，内层才是短圆角胶囊」这一条 FAIL、84 项通过、FAILED 1 项；
+  恢复后 85 项全绿。证明新用例不是空转。
+
+### 没做
+
+- 没改分区数量（仍是四栏）、没动 tab 文案与图标 —— 用户这轮只要求调整这条的观感。
+- 没在宿主真窗口里刷新后截图：`curl http://127.0.0.1:49720/` 返回 401
+  `dsh web authentication required`，客户端 bundle 要用户手动刷新页面才生效。
+
+---
+
 ## [2.1.19] - 2026-11-10
 
 ### 改进

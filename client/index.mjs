@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.19'
+    const VERSION = '2.1.20'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -834,36 +834,32 @@ window.__ModuleLoader__.load({
       // 会把吸底栏顶到离视口底 96px 的地方悬着（72 + 24），下面留一截空白。
       '.an-root{display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}',
       // ── 分区导航 ──
-      // 不再吸顶。原先是 position:sticky;top:0，理由是「翻到第三张卡时还看得见
-      // 分区在哪一排」。实际代价是：宿主设置面板的滚动窗口只有约 722px
-      // （800 面板高 − 54 的 header − 24 的底部内边距），而灵台底部还有一条吸底
-      // 的保存栏，上下两条常驻栏合计吃掉约 10% 的高度，且吸顶那条与面板自身的
-      // 边缘只隔 4px，视觉上像贴了两层。
+      // 两层结构（2.1.20）：外层 .an-sectnav 是整行宽的 sticky 占位层，用面板
+      // 自身底色（bg-layer-2：亮 #fff / 暗 rgb(44,44,46)）把滚上来的卡片挡住；
+      // 内层 .an-sectnav-inner 才是视觉主体 —— 一条短圆角胶囊，底色比面板深一档
+      // （markdown-code-block：亮 #f9fafb / 暗 #1b1b1c），四周留出面板底色，
+      // 圆角才看得见。用户要的「剪短 + 圆角 + 露出底色」都落在这一层。
       //
-      // 2.1.5 一度把它改成跟着内容滚走，理由是「分区只有四栏、切换成本低」。
-      // 2.1.15 实测推翻了这个判断：人设栏内容 2168px、滚动上限 1422，滚到
-      // scrollTop=600 时导航已在 -482，=1422 时在 -1304，elementFromPoint 打不中
-      // 任何一个 tab —— 不是「多为难」，是滚下去就没法切栏。
+      // 为什么保留整宽外层：2.1.15 实测人设栏内容 2168px、滚动上限 1422，滚到
+      // 600 时导航已在 -482、=1422 时在 -1304，elementFromPoint 打不中 tab ——
+      // 不吸顶就滚下去没法切栏。而只留短胶囊（2.1.20 试过 E 方案）吸顶时右侧
+      // 滚过来的文字会贴着胶囊右缘被切断；100vmax 遮罩（D 方案）又把下方正文
+      // 全盖成面板色。整宽不透明占位层是唯一同时满足「随时能切 + 不硬切内容」的做法。
       //
-      // 所以恢复吸顶，但保持 2.1.5 定下的无框语言：不回到白底 + 1px 边框 + 8px
-      // 圆角的「盒中盒」，只用面板自身的底色（宿主 panel 就是 bg-layer-2：亮色
-      // #fff、暗色 rgb(44,44,46)）把滚过去的卡片盖住，靠底部那条发丝线收边。
-      // 这样既随时能切，又不新增一块实体容器。
-      // 宽度必须与正文列一致，不铺满滚动容器。2.1.17 曾用 `margin:0 -24px` +
-      // `padding:0 24px` 把底色拉满到 `.options` 的整行（x212 w588），理由是
-      // 「否则左右 24px 会露正文」。2.1.18 用 `elementFromPoint` 实测推翻了这个
-      // 理由：撤掉之后那两条 24px 命中 `options`（容器本身），滚过去的卡片始终
-      // 在内容盒 x236 w540 里，进不去；而铺满反而让深色带比标题、卡片、变更记录
-      // 各宽出 24px —— 实测 nav 212..800 vs 正文 236..776，用户指的就是这条不齐。
-      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:0;margin:0;padding:0;border:0;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
-      // margin-bottom:-1px 让按钮的 2px 底边压住导航那条 .5px 发丝线 —— 早一版用
-      // inset 阴影画下划线，截图里它悬在发丝线上方 1px，像一块没对齐的补丁。
-      '.an-sectnav-tab{margin:0 20px -1px 0;padding:7px 0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
-      '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary)}',
-      // 选中态必须一眼看得见。原来用 --dsw-alias-bg-base 当背景，那是**页面自身底色**，
-      // 垫在同一块的 layer-1 上等于没变（用户录屏里五个标签一个都看不出被选中）。
-      // 现在改成「更亮的表面 + 品牌色下划线 + 加粗」三重，深浅色主题下都成立。
-      '.an-sectnav-tab-on{border-bottom-color:var(--dsw-alias-brand-primary);background:transparent;color:var(--dsw-alias-label-primary);font-weight:600}',
+      // 宽度：外层与正文列同宽同起点（x236 w540），不铺满 .options 整行。
+      // 2.1.17 曾用 margin:0 -24px + padding:0 24px 拉满到 x212 w588，2.1.18 用
+      // elementFromPoint 实测推翻（那 24px 命中 options 容器本身，滚过去的卡片
+      // 进不去），深色带反而比标题、卡片、变更记录各宽 24px，用户指的就是那条不齐。
+      '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:0;margin:0;padding:0;border:0;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
+      '.an-sectnav-inner{display:inline-flex;flex-wrap:wrap;gap:2px;margin:6px 0 2px;padding:4px;border:0;border-radius:var(--dsw-radius-md,12px);background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2)));box-shadow:0 2px 10px rgba(0,0,0,.18)}',
+      '.an-sectnav-tab{margin:0;padding:6px 16px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
+      '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
+      // 选中态要一眼看得见。原来用 --dsw-alias-bg-base（页面自身底色）垫在 layer-1
+      // 上等于没变。现在用 color-mix 把 banner 与 label-primary 混一下：亮色混出偏深
+      // 的灰（实测 color(srgb .811 .816 .822)，胶囊底 #f9fafb）、暗色混出偏亮的灰
+      // （实测 color(srgb .317 .318 .325)，胶囊底 #1b1b1c）—— 两个主题都与胶囊底
+      // 有可见差异，不写死第二套暗色规则。
+      '.an-sectnav-tab-on{background:color-mix(in srgb,var(--dsw-alias-markdown-code-block-banner,var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-1))) 82%,var(--dsw-alias-label-primary));color:var(--dsw-alias-label-primary);font-weight:600}',
       // ── 底部保存栏 ──
       // 卡片里原来散着六处「保存」，每张卡各自一份、四条走的是同一个 doSave。
       // 收成一条之后，「现在有改动没保存」这件事只有一个说法。
@@ -2440,22 +2436,27 @@ window.__ModuleLoader__.load({
         select(target)
         focusTab(target)
       }
+      // 外层是整行 sticky 占位层，内层 inner 才是短圆角胶囊（见 CSS 注释）。
+      // inner 挂 role=presentation：ARIA 上 tab 仍被 tablist 拥有，不让这一层
+      // 表现容器插进 tablist 与 tab 的从属关系里。
       return e('div', { className: 'an-sectnav', role: 'tablist', 'aria-label': t('nav.label'), onKeyDown },
-        SECTIONS.map((section) => {
-          const on = props.active === section.id
-          return e('button', {
-            key: section.id,
-            type: 'button',
-            role: 'tab',
-            id: `an-sectnav-tab-${section.id}`,
-            // 指到本栏的第一张卡（多卡栏只锚在首张上，见 cardSlot 里 tabpanel 的说明）。
-            'aria-controls': `an-card-${section.cards[0]}`,
-            className: `an-sectnav-tab${on ? ' an-sectnav-tab-on' : ''}`,
-            'aria-selected': on ? 'true' : 'false',
-            tabIndex: on ? 0 : -1,
-            onClick: () => select(section.id)
-          }, t(`section.${section.id}`))
-        })
+        e('div', { className: 'an-sectnav-inner', role: 'presentation' },
+          SECTIONS.map((section) => {
+            const on = props.active === section.id
+            return e('button', {
+              key: section.id,
+              type: 'button',
+              role: 'tab',
+              id: `an-sectnav-tab-${section.id}`,
+              // 指到本栏的第一张卡（多卡栏只锚在首张上，见 cardSlot 里 tabpanel 的说明）。
+              'aria-controls': `an-card-${section.cards[0]}`,
+              className: `an-sectnav-tab${on ? ' an-sectnav-tab-on' : ''}`,
+              'aria-selected': on ? 'true' : 'false',
+              tabIndex: on ? 0 : -1,
+              onClick: () => select(section.id)
+            }, t(`section.${section.id}`))
+          })
+        )
       )
     }
 

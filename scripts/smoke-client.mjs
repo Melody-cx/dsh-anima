@@ -2969,29 +2969,46 @@ await test('分区导航：一直吸在顶部（滚下去还能切栏），底�
   assert.ok(/var\(--dsw-alias-/.test(bg), `吸顶栏底色没走宿主 token：${bg}`)
 })
 
-await test('分区导航：吸顶栏与正文列同宽同起点（不额外铺满容器）', () => {
-  // 宿主给第三方分区的内容列带左右各 24px 内边距：.options 宽 588、真正的内容区
-  // 只有 540。2.1.17 曾用负 margin + 等量 padding 把导航底色拉满整行（x212 w588），
-  // 理由是「否则左右 24px 露正文」。
+await test('分区导航：占位层与正文同起点，内层才是短圆角胶囊（剪短 + 露底）', () => {
+  // 2.1.20 把导航拆成两层：外层 .an-sectnav 是整行宽的 sticky 占位层（与正文列
+  // 同宽同起点，用面板底色挡住滚上来的卡片），内层 .an-sectnav-inner 才是一条
+  // 短圆角胶囊（display:inline-flex ⇒ 只占内容宽，四周露出面板底色）。
   //
-  // 2.1.18 用 `elementFromPoint` 实测推翻了那个理由：撤掉之后那两条 24px 命中
-  // 的是 `options` 容器本身，滚过去的卡片始终排在内容盒 x236 w540 里，进不去。
-  // 而铺满反而让深色带比页头标题、卡片、变更记录各宽出 24px —— 肉眼就是「吸顶
-  // 那条带的起始点和下面的内容对不上」。
-  //
-  // 所以这条断的是：导航的水平 margin / padding 必须为 0。写到非 0（尤其是负
-  // margin）就说明又回到了「比正文宽」的老路。
+  // 断两件可证伪的事：
+  // ① 外层不许回到 2.1.17 的负 margin / px padding 老路 —— 那样深色带会比
+  //    页头标题、卡片、变更记录各宽 24px（实测 nav 212..800 vs 正文 236..776）。
+  // ② 内层必须真的「短 + 圆角 + 与面板不同底」：inline-flex、带 border-radius
+  //    token、正 margin（露底）、底色走 markdown-code-block token、有投影。
+  //    少了任意一样，用户要的「剪短 + 圆角 + 露出底色」就退化成 2.1.19 那条
+  //    横贯整行的深色带。
   const css = styleTags.map((tag) => tag.textContent).join('\n')
-  const rule = css.match(/\.an-sectnav\{([^}]*)\}/)
-  assert.ok(rule, '找不到 .an-sectnav 规则')
-  const body = rule[1]
+  const outer = css.match(/\.an-sectnav\{([^}]*)\}/)
+  assert.ok(outer, '找不到 .an-sectnav 规则')
+  const body = outer[1]
   const margin = (body.match(/(?:^|;)\s*margin:([^;}]*)/) || [])[1] || ''
   const padding = (body.match(/(?:^|;)\s*padding:([^;}]*)/) || [])[1] || ''
-  assert.ok(!/-\d/.test(margin), `吸顶栏不能再有负的水平 margin，会宽出正文列：margin=${margin}`)
+  assert.ok(!/-\d/.test(margin), `占位层不能再有负的水平 margin，会宽出正文列：margin=${margin}`)
   assert.ok(
     !/\d+(?:\.\d+)?px/.test(padding),
-    `吸顶栏不该有水平 padding（它和负 margin 是一对，撤了 margin 就得一起撤）：padding=${padding}`
+    `占位层不该有水平 padding（它和负 margin 是一对）：padding=${padding}`
   )
+  const inner = css.match(/\.an-sectnav-inner\{([^}]*)\}/)
+  assert.ok(inner, '找不到 .an-sectnav-inner 规则（胶囊层被删了？）')
+  const ib = inner[1]
+  assert.ok(/display:inline-flex/.test(ib), `内层不是 inline-flex，剪不成短条：${ib}`)
+  assert.ok(/border-radius:var\(--dsw-radius/.test(ib), `内层没有圆角：${ib}`)
+  const imargin = (ib.match(/(?:^|;)\s*margin:([^;}]*)/) || [])[1] || ''
+  assert.ok(/\d+(?:\.\d+)?px/.test(imargin), `内层没有正 margin，四周露不出面板底色：margin=${imargin}`)
+  assert.ok(/background:var\(--dsw-alias-markdown-code-block/.test(ib), `内层底色没走代码块 token：${ib}`)
+  assert.ok(/box-shadow:/.test(ib), `内层没有投影，吸顶时右侧文字会贴边被切断：${ib}`)
+  // DOM：inner 层存在、是外层 tablist 的唯一子容器、四个 tab 都在它里面。
+  // walk() 扁平化后按 className 找，能同时证明渲染树里真的多了一层。
+  const tree = walk(lastTree)
+  const innerNodes = byClass(tree, 'an-sectnav-inner')
+  assert.equal(innerNodes.length, 1, `应有且仅有一层 inner（实际 ${innerNodes.length}）`)
+  assert.equal(innerNodes[0].props.role, 'presentation', 'inner 要挂 role=presentation，别插进 tablist→tab 的从属关系')
+  const tabs = byClass(tree, 'an-sectnav-tab')
+  assert.equal(tabs.length, 4, `四个 tab 应仍在（实际 ${tabs.length}）`)
 })
 
 await test('代码块：圆角、左右内缩露底、底色走宿主 token、正文无 1px 描边', () => {
