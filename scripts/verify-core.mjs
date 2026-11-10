@@ -2117,6 +2117,27 @@ test('splitImportedText：无空格的列表项也单独成条', () => {
   assert.ok(!out.some((s) => s.includes('pnpm 管理依赖 -')), '两条不该被缝在一起')
 })
 
+test('splitImportedText：小数与版本号不被当成编号列表项（前导数字不许被吃掉）', () => {
+  // 回归：LIST_ITEM 把 \s+ 放宽成 \s* 之后，不要求分隔符后跟空格，
+  // 于是 `1.5 版本…` `2024.10 的记录…` `3.14 是…` 里的 `1.` `2024.` `3.`
+  // 被当成列表编号，切出「5 版本之后默认开启暗色」这种少了前导数字的残句，
+  // 而且静默无提示。数字分隔符后紧跟数字就判成小数/版本号，整行留作普通段落。
+  const samples = [
+    '1.5 版本之后默认开启暗色',
+    '2024.10 的记录里提到过这件事',
+    '3.14 是圆周率的近似值',
+  ]
+  for (const line of samples) {
+    const out = splitImportedText(line)
+    assert.equal(out.length, 1, `不该切碎：${line} → ${JSON.stringify(out)}`)
+    assert.equal(out[0], line, `前导数字被吃掉了：${line} → ${JSON.stringify(out)}`)
+  }
+  // 这条放宽不能把「正常的编号列表项」一起弄丢：分隔符后是空格或中文顿号时照常识别。
+  const numbered = splitImportedText('1. 第一条正常列表项\n2. 第二条正常列表项\n3、本项目用 pnpm 管理依赖')
+  assert.equal(numbered.length, 3, `正常编号项应切成三条：${JSON.stringify(numbered)}`)
+  assert.deepEqual(numbered, ['第一条正常列表项', '第二条正常列表项', '本项目用 pnpm 管理依赖'])
+})
+
 test('parseImport：一条凭据命中即整条拦下，且不进 items', () => {
   const r = parseImport('- 我的 key 是 sk-abcdefghijklmnopqrstuvwxyz012345', [])
   assert.equal(r.counts.blocked, 1)

@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.2.0'
+    const VERSION = '2.2.1'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -2307,10 +2307,6 @@ window.__ModuleLoader__.load({
       }
       const key = REASON_KEYS[text]
       return key ? t(key) : text
-    }
-
-    function Pre(props) {
-      return e('pre', { className: 'an-pre' }, props.text ?? '')
     }
 
     // 导入提示词与预览装配结果共用这一层「代码块」外壳。刻意做成纯展示组件：
