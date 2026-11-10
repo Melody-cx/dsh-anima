@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.21'
+    const VERSION = '2.2.0'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -834,7 +834,7 @@ window.__ModuleLoader__.load({
       // 会把吸底栏顶到离视口底 96px 的地方悬着（72 + 24），下面留一截空白。
       '.an-root{display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}',
       // ── 分区导航 ──
-      // 两层结构（2.1.20 引入，2.1.21 拉开 tab 间距）：外层 .an-sectnav 是整行宽的 sticky 占位层，用面板
+      // 两层结构（2.1.20 引入，2.2.0 拉开 tab 间距）：外层 .an-sectnav 是整行宽的 sticky 占位层，用面板
       // 自身底色（bg-layer-2：亮 #fff / 暗 rgb(44,44,46)）把滚上来的卡片挡住；
       // 内层 .an-sectnav-inner 才是视觉主体 —— 一条短圆角胶囊，底色比面板深一档
       // （markdown-code-block：亮 #f9fafb / 暗 #1b1b1c），四周留出面板底色，
