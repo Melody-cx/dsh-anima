@@ -2997,6 +2997,11 @@ await test('分区导航：占位层与正文同起点，内层才是短圆角�
   const ib = inner[1]
   assert.ok(/display:inline-flex/.test(ib), `内层不是 inline-flex，剪不成短条：${ib}`)
   assert.ok(/border-radius:var\(--dsw-radius/.test(ib), `内层没有圆角：${ib}`)
+  // 四个 tab 不许再挤在一起：2.1.20 首版 gap:2px，实测四个盒子之间只有 2px、
+  // 词之间 34px，用户原话（m05986）「把这四个人设记忆表现高级分开不要挨得这么紧」。
+  // 量过 6/10/12/14/16px 后定 12px（与文件既有间距阶梯对齐，窄屏仍折成 2+2 两行不溢出）。
+  const igap = (ib.match(/(?:^|;)\s*gap:([^;}]*)/) || [])[1] || ''
+  assert.ok(parseFloat(igap) >= 8, `四个 tab 之间至少留 8px，别又挤回 2px：gap=${igap}`)
   const imargin = (ib.match(/(?:^|;)\s*margin:([^;}]*)/) || [])[1] || ''
   assert.ok(/\d+(?:\.\d+)?px/.test(imargin), `内层没有正 margin，四周露不出面板底色：margin=${imargin}`)
   assert.ok(/background:var\(--dsw-alias-markdown-code-block/.test(ib), `内层底色没走代码块 token：${ib}`)

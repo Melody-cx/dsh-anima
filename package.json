@@ -1,6 +1,6 @@
 {
   "name": "dsh-anima",
-  "version": "2.1.20",
+  "version": "2.1.21",
   "description": "DSH 助手人格与外挂记忆层：AI 自身的名字与角色、按工作区两级覆盖、带待审缓冲区的长期记忆",
   "icon": "./assets/icon.svg",
   "type": "module",

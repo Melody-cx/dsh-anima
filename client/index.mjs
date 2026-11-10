@@ -46,7 +46,7 @@ window.__ModuleLoader__.load({
     const NS = 'anima'
     // 与 package.json 的 "version" 保持同一条口径：徽标上显示的版本和发布的版本
     // 必须是同一个数字，否则用户报 bug 时对不上号。
-    const VERSION = '2.1.20'
+    const VERSION = '2.1.21'
     const REQUEST_TIMEOUT_MS = 15000
 
     // ── 设置页分区 ──────────────────────────────────────────────────────
@@ -834,7 +834,7 @@ window.__ModuleLoader__.load({
       // 会把吸底栏顶到离视口底 96px 的地方悬着（72 + 24），下面留一截空白。
       '.an-root{display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}',
       // ── 分区导航 ──
-      // 两层结构（2.1.20）：外层 .an-sectnav 是整行宽的 sticky 占位层，用面板
+      // 两层结构（2.1.20 引入，2.1.21 拉开 tab 间距）：外层 .an-sectnav 是整行宽的 sticky 占位层，用面板
       // 自身底色（bg-layer-2：亮 #fff / 暗 rgb(44,44,46)）把滚上来的卡片挡住；
       // 内层 .an-sectnav-inner 才是视觉主体 —— 一条短圆角胶囊，底色比面板深一档
       // （markdown-code-block：亮 #f9fafb / 暗 #1b1b1c），四周留出面板底色，
@@ -851,7 +851,7 @@ window.__ModuleLoader__.load({
       // elementFromPoint 实测推翻（那 24px 命中 options 容器本身，滚过去的卡片
       // 进不去），深色带反而比标题、卡片、变更记录各宽 24px，用户指的就是那条不齐。
       '.an-sectnav{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:0;margin:0;padding:0;border:0;background:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-layer-1))}',
-      '.an-sectnav-inner{display:inline-flex;flex-wrap:wrap;gap:2px;margin:6px 0 2px;padding:4px;border:0;border-radius:var(--dsw-radius-md,12px);background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2)));box-shadow:0 2px 10px rgba(0,0,0,.18)}',
+      '.an-sectnav-inner{display:inline-flex;flex-wrap:wrap;gap:12px;margin:6px 0 2px;padding:4px;border:0;border-radius:var(--dsw-radius-md,12px);background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2)));box-shadow:0 2px 10px rgba(0,0,0,.18)}',
       '.an-sectnav-tab{margin:0;padding:6px 16px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;white-space:nowrap}',
       '.an-sectnav-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
       // 选中态要一眼看得见。原来用 --dsw-alias-bg-base（页面自身底色）垫在 layer-1

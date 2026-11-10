@@ -35,6 +35,13 @@
   `aria-controls` / `aria-selected` / `tabIndex` / 左右箭头、Home/End
   键盘漫游全部原样保留；`position:sticky;top:0` 不变。
 
+- **四个 tab 之间的间距拉开（2px → 12px）**。2.1.20 首版胶囊内 `gap:2px`，实测四个
+  tab 盒子之间只有 2px、词与词之间 34px，挤成一条。用户原话（m05986）：
+  `把这四个人设记忆表现高级分开不要挨得这么紧`。在复刻页量了 6/10/12/14/16px 五档，
+  定 12px：与文件既有间距阶梯对齐；460 窄屏仍折成 2+2 两行、无溢出、吸顶正常；
+  胶囊从 w246 涨到 w276，仍是短条。`smoke-client` 的胶囊用例新增断言 `gap ≥ 8px`，
+  反向验证：改回 `gap:2px` → 恰好这一条 FAIL（84 项通过、FAILED 1）；恢复后 85 项全绿。
+
 ### 验证
 
 - 无头 Edge 用**当前落盘源码**重建复刻页（`ANIMA_SECTION=persona node base.mjs` →
