@@ -476,7 +476,7 @@ The near-duplicate hint deliberately only hints and never merges: auto-merging w
 Published to npm as `dsh-anima`. Install by package name:
 
 ```
-dsh plugin add dsh-anima@2.2.2
+dsh plugin add dsh-anima@2.2.3
 ```
 
 Or edit the profile's `package.json` by hand:
@@ -484,13 +484,13 @@ Or edit the profile's `package.json` by hand:
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "2.2.2"
+    "dsh-anima": "2.2.3"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`@2.2.2` can be any published version, or drop it entirely to install the latest. **Pin a version** —
+`@2.2.3` can be any published version, or drop it entirely to install the latest. **Pin a version** —
 otherwise a new upstream release replaces it on the next install.
 
 Then `pnpm install` and **restart DSH**. Any host-side change requires a restart to take effect.
@@ -500,7 +500,7 @@ Then `pnpm install` and **restart DSH**. Any host-side change requires a restart
 To install a version not yet on npm, or track `main` directly:
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v2.2.2
+dsh plugin add github:Melody-cx/dsh-anima#v2.2.3
 ```
 
 Or edit the profile's `package.json` by hand:
@@ -508,13 +508,13 @@ Or edit the profile's `package.json` by hand:
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v2.2.2"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.2.3"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v2.2.2` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
+`#v2.2.3` is the tag (a commit SHA works too, or drop it entirely to follow `main`). **Pin a version** —
 otherwise any upstream change lands in your profile on the next install. A git source downloads the
 **whole repository tarball** (this one is small), so the first install may be slower than an npm source;
 retry once if it times out.
