@@ -494,9 +494,33 @@ URL 内嵌凭据等 11 类模式。
 
 ## 安装
 
-### 从 GitHub 安装（推荐）
+### 从 npm 安装（推荐）
 
-本插件尚未发布到 npm，从仓库直接装：
+已发布到 npm，包名 `dsh-anima`，直接用包名装：
+
+```
+dsh plugin add dsh-anima@2.2.1
+```
+
+或者手工改 profile 的 `package.json`：
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-anima": "2.2.1"
+  },
+  "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
+}
+```
+
+`@2.2.1` 可以换成别的已发布版本，或整个省略以装最新版。**建议 pin 住一个版本**，
+否则上游发了新版，下次安装就会直接换掉。
+
+然后 `pnpm install`，**重启 DSH**。宿主侧改动一律需要重启才生效。
+
+### 从 GitHub 安装（跟进未发布改动）
+
+想装还没发到 npm 的版本、或直接跟进 `main`，就从仓库装：
 
 ```
 dsh plugin add github:Melody-cx/dsh-anima#v2.2.1

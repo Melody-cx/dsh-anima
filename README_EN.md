@@ -471,9 +471,33 @@ The near-duplicate hint deliberately only hints and never merges: auto-merging w
 
 ## Installation
 
-### From GitHub (recommended)
+### From npm (recommended)
 
-The plugin is not published to npm yet; install it straight from the repository:
+Published to npm as `dsh-anima`. Install by package name:
+
+```
+dsh plugin add dsh-anima@2.2.1
+```
+
+Or edit the profile's `package.json` by hand:
+
+```jsonc
+{
+  "dependencies": {
+    "dsh-anima": "2.2.1"
+  },
+  "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
+}
+```
+
+`@2.2.1` can be any published version, or drop it entirely to install the latest. **Pin a version** —
+otherwise a new upstream release replaces it on the next install.
+
+Then `pnpm install` and **restart DSH**. Any host-side change requires a restart to take effect.
+
+### From GitHub (to follow unreleased changes)
+
+To install a version not yet on npm, or track `main` directly:
 
 ```
 dsh plugin add github:Melody-cx/dsh-anima#v2.2.1
