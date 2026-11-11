@@ -499,7 +499,7 @@ URL 内嵌凭据等 11 类模式。
 已发布到 npm，包名 `dsh-anima`，直接用包名装：
 
 ```
-dsh plugin add dsh-anima@2.2.1
+dsh plugin add dsh-anima@2.2.2
 ```
 
 或者手工改 profile 的 `package.json`：
@@ -507,13 +507,13 @@ dsh plugin add dsh-anima@2.2.1
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "2.2.1"
+    "dsh-anima": "2.2.2"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`@2.2.1` 可以换成别的已发布版本，或整个省略以装最新版。**建议 pin 住一个版本**，
+`@2.2.2` 可以换成别的已发布版本，或整个省略以装最新版。**建议 pin 住一个版本**，
 否则上游发了新版，下次安装就会直接换掉。
 
 然后 `pnpm install`，**重启 DSH**。宿主侧改动一律需要重启才生效。
@@ -523,7 +523,7 @@ dsh plugin add dsh-anima@2.2.1
 想装还没发到 npm 的版本、或直接跟进 `main`，就从仓库装：
 
 ```
-dsh plugin add github:Melody-cx/dsh-anima#v2.2.1
+dsh plugin add github:Melody-cx/dsh-anima#v2.2.2
 ```
 
 或者手工改 profile 的 `package.json`：
@@ -531,13 +531,13 @@ dsh plugin add github:Melody-cx/dsh-anima#v2.2.1
 ```jsonc
 {
   "dependencies": {
-    "dsh-anima": "github:Melody-cx/dsh-anima#v2.2.1"
+    "dsh-anima": "github:Melody-cx/dsh-anima#v2.2.2"
   },
   "dsh": { "profile": { "bundles": [ /* ... */ "dsh-anima" ] } }
 }
 ```
 
-`#v2.2.1` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
+`#v2.2.2` 是标签（也可以写 commit SHA，或整个省略以跟随 `main`）。**建议 pin 住一个版本**，
 否则上游的任何改动都会在下次安装时直接进入你的 profile。git 源下载的是**整个仓库 tarball**
 （本仓库很小），首次安装可能比 npm 源慢一些，超时的话重试一次即可。
 
